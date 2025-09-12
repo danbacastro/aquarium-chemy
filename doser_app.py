@@ -38,7 +38,6 @@ st.markdown(f"""
   .card {{
     background: var(--card); border: 1px solid var(--border);
     border-radius: 14px; padding: 14px; margin: 8px 0;
-    animation: fadeIn .35s ease-out;
   }}
   .hr {{ border-top:1px solid var(--border); margin: 10px 0; }}
   .pill {{ display:inline-block; padding:6px 10px; border-radius:999px;
@@ -58,14 +57,6 @@ st.markdown(f"""
   .warn {{ color: var(--warn); }}
   .bad  {{ color: var(--bad);  }}
 
-  /* Accordion tweaks */
-  details summary {{
-    cursor: pointer; list-style: none; outline: none;
-  }}
-  @keyframes fadeIn {{
-    from {{ opacity: 0; transform: translateY(4px); }}
-    to   {{ opacity: 1; transform: translateY(0); }}
-  }}
   table.dataframe {{ border-collapse: collapse; width: 100%; }}
   table.dataframe th, table.dataframe td {{ border: 1px solid var(--border); padding: 6px 8px; }}
   table.dataframe th {{ background:#0d162c; color:var(--text); }}
@@ -75,11 +66,9 @@ st.markdown(f"""
 st.markdown("""
 <div class="hero">
   <h1>💧 Doser – Plantado & Camarões</h1>
-  <div class="muted">Correção com/sem TPA, alvo por PO₄ (recomendado) ou NO₃, Redfield, GH (pó) e KH+.
-  Visual compacto e otimizado para celular.</div>
+  <div class="muted">Correção com/sem TPA, alvo por PO₄ (recomendado) ou NO₃, Redfield, GH (pó) e KH+. Visual otimizado para celular.</div>
 </div>
 """, unsafe_allow_html=True)
-
 
 # ===================== Helpers & Core =====================
 def conversions(density_g_per_ml: float, pctN: float, pctP: float):
@@ -118,7 +107,7 @@ def kpi(title, value, subtitle="", cls=""):
     </div>
     """
 
-# ===================== Sidebar (compact inputs) =====================
+# ===================== Sidebar (inputs) =====================
 with st.sidebar:
     st.markdown("## ⚙️ Parâmetros do aquário")
     vol = st.number_input("Volume útil (L)", min_value=1.0, value=50.0, step=1.0)
@@ -160,13 +149,18 @@ with st.sidebar:
     micro_freq = st.selectbox("Aplicações de micro/semana", options=[1,2,3], index=1)
 
     st.markdown("---")
+    st.markdown("### 🌿 Fertilizante de Nitrogênio (isolado)")
+    # Padrão do fabricante que você passou: 6 mL/100 L → +4,8 ppm NO3
+    dose_mL_per_100L = st.number_input("mL por dose (por 100 L)", min_value=0.1, value=6.0, step=0.1)
+    adds_ppm_per_100L = st.number_input("ppm de NO₃ adicionados por dose (100 L)", min_value=0.1, value=4.8, step=0.1)
+
+    st.markdown("---")
     st.markdown("### 🧱 Alvos GH & KH (ReeFlowers)")
     gh_target = st.number_input("GH alvo (°dH)", min_value=0.0, value=7.0, step=0.5)
     g_per_dGH_100L = st.number_input("Shrimp Minerals (pó): g p/ +1°dGH /100 L", min_value=0.1, value=2.0, step=0.1)
     remin_mix_to = st.number_input("Remineralizar água da TPA até GH (°dH)", min_value=0.0, value=gh_target, step=0.5)
     kh_target = st.number_input("KH alvo (°dKH)", min_value=0.0, value=3.0, step=0.5)
     ml_khplus_per_dKH_100L = st.number_input("KH+ (mL) p/ +1°dKH /100 L", min_value=1.0, value=30.0, step=1.0)
-
 
 # ===================== Cálculos Macro =====================
 tpa_eff = tpa if do_tpa else 0.0
@@ -200,6 +194,28 @@ no3_drift = no3_from_daily - no3_daily
 
 r_before, status_before = ratio_redfield(no3_base, po4_base)
 r_after,  status_after  = ratio_redfield(no3_after, po4_after)
+
+# ===================== Cálculo – N fertilizante isolado =====================
+# Potência do N-fert por mL em 100 L
+ppm_per_mL_per_100L = adds_ppm_per_100L / dose_mL_per_100L  # ex.: 4.8/6 = 0.8 ppm por mL (em 100 L)
+# Potência por mL no seu aquário (vol L):
+ppm_per_mL_tank = ppm_per_mL_per_100L * (100.0 / vol)
+
+# Critérios para sugerir dose de N:
+need_N_by_ratio = (r_after < 8)    # relação baixa → falta NO3
+need_N_by_range = (target_mode.startswith("PO₄") and (no3_after < no3_min))
+suggest_N = (ppm_per_mL_tank > 0) and (need_N_by_ratio or need_N_by_range)
+
+N_dose_mL = 0.0
+N_target_ppm = no3_target
+no3_after_N = no3_after
+
+if suggest_N:
+    deficit = max(0.0, N_target_ppm - no3_after)  # subir até o alvo (meio da faixa)
+    N_dose_mL = deficit / ppm_per_mL_tank
+    no3_after_N = no3_after + N_dose_mL * ppm_per_mL_tank
+    # dica opcional: alvo Redfield exato ~ PO4*10
+    redfield_exact = po4_after * 10.0
 
 # ===================== Cálculos GH / KH (ReeFlowers) =====================
 # GH (pó): 2 g/100L → +1°dGH  (≈ 1,15 mL/g se quiser medir em mL)
@@ -242,19 +258,24 @@ with left:
     st.write(f"→ em {vol:.0f} L: **{dPO4_per_mL:.3f} ppm PO₄/mL** | **{dNO3_per_mL:.3f} ppm NO₃/mL**")
     st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
     st.write(f"**Correção agora:** **{mL_now:.2f} mL**  → após dose: NO₃ **{no3_after:.2f} ppm**, PO₄ **{po4_after:.2f} ppm**.")
+
+    # Alertas de faixa
     if target_mode.startswith("PO₄") and (warn_no3):
         st.markdown('<span class="bad">Atenção:</span> NO₃ fora da faixa desejada.', unsafe_allow_html=True)
     if (not target_mode.startswith("PO₄")) and (warn_po4):
         st.markdown('<span class="bad">Atenção:</span> PO₄ fora da faixa desejada.', unsafe_allow_html=True)
-    st.caption("Se o macro acoplar demais N e P, use sais isolados (KNO₃ / KH₂PO₄) para correções finas.")
-    st.markdown('</div>', unsafe_allow_html=True)
 
-with right:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("## Redfield & pH")
-    st.write(f"Antes da dose: **{r_before:.2f}:1**  |  Depois: **{r_after:.2f}:1**")
-    st.write(f"pH atual: **{pH_now:.1f}**")
-    st.caption("Guia prático para íons (ppm): ~10:1 (verde 8–15, amarelo 6–18).")
+    # 🔹 NOVO: sugestão de Nitrogênio embutida no Resumo
+    # Mostra quando a relação NO3:PO4 estiver baixa (<8) OU quando NO3 pós-dose ficar abaixo da faixa desejada
+    if suggest_N and N_dose_mL > 0.0001:
+        st.write(
+            f"Adicionar **{N_dose_mL:.2f} mL** de fertilizante de **Nitrogênio** "
+            f"para atingir **{N_target_ppm:.2f} ppm** de **NO₃** desejado."
+        )
+        st.caption(
+            f"Potência usada: {dose_mL_per_100L:.1f} mL/100 L → +{adds_ppm_per_100L:.1f} ppm NO₃ "
+            f"(≈ {ppm_per_mL_per_100L:.2f} ppm por mL em 100 L; no seu aquário: {ppm_per_mL_tank:.2f} ppm/mL)."
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ===================== Agenda semanal =====================
@@ -298,7 +319,7 @@ with c2:
     st.caption("Regra do fabricante: 30 mL/100 L → +1 °dKH.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ===================== Tabela de faixas (com realce) =====================
+# ===================== Tabela de faixas (com realce funcional) =====================
 data = [
     {"Grupo": "Neocaridina davidi (Red Cherry, etc.)", "pH_range": (6.5, 7.8), "GH_range": (6.0, 12.0), "KH_range": (3.0, 8.0)},
     {"Grupo": "Caridina cantonensis (Crystal/Bee/Taiwan Bee)", "pH_range": (5.5, 6.5), "GH_range": (4.0, 6.0), "KH_range": (0.0, 2.0)},
@@ -317,22 +338,19 @@ df_params = pd.DataFrame({
 })
 df_display = df_params[["Grupo", "pH", "GH (°dH)", "KH (°dKH)"]].copy()
 
-# marca verde quando seus valores ATUAIS estão dentro da faixa
-styles = pd.DataFrame('', index=df_display.index, columns=df_display.columns)
-for i in df_display.index:
-    row = df_params.loc[i]
-    if row["pH_min"] <= pH_now <= row["pH_max"]:
-        styles.at[i, "pH"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
-    if row["GH_min"] <= gh_now <= row["GH_max"]:
-        styles.at[i, "GH (°dH)"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
-    if row["KH_min"] <= kh_now <= row["KH_max"]:
-        styles.at[i, "KH (°dKH)"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
+def _highlight(_, df_params=df_params, pH_now=pH_now, gh_now=gh_now, kh_now=kh_now):
+    styles = pd.DataFrame('', index=df_display.index, columns=df_display.columns)
+    for i in df_display.index:
+        row = df_params.loc[i]
+        if row["pH_min"] <= pH_now <= row["pH_max"]:
+            styles.at[i, "pH"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
+        if row["GH_min"] <= gh_now <= row["GH_max"]:
+            styles.at[i, "GH (°dH)"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
+        if row["KH_min"] <= kh_now <= row["KH_max"]:
+            styles.at[i, "KH (°dKH)"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
+    return styles
 
-styled = df_display.style.set_table_styles([
-    {'selector':'th', 'props':[('text-align','left')]},
-    {'selector':'td', 'props':[('text-align','left')]},
-]).set_properties(**{'text-align':'left'}).set_table_attributes('class="dataframe"').set_td_classes(styles)
-
+styled = df_display.style.apply(_highlight, axis=None)
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown("## Faixas recomendadas (realce pelos seus valores atuais)")
 st.markdown(styled.to_html(), unsafe_allow_html=True)
@@ -349,6 +367,9 @@ config = {
               "ppm_per_mL": {"PO4": dPO4_per_mL, "NO3": dNO3_per_mL},
               "dose_now_mL": mL_now, "after": {"NO3_ppm": no3_after, "PO4_ppm": po4_after},
               "daily_macro_mL": mL_day_macro, "NO3_drift_ppm_day": no3_drift},
+    "N_fert": {"dose_mL_per_100L": dose_mL_per_100L, "adds_ppm_per_100L": adds_ppm_per_100L,
+               "ppm_per_mL_per_100L": ppm_per_mL_per_100L, "ppm_per_mL_tank": ppm_per_mL_tank,
+               "suggested": suggest_N, "dose_now_mL": N_dose_mL, "target_NO3_ppm": N_target_ppm, "after_NO3_ppm": no3_after_N},
     "gh_kh": {
         "g_per_dGH_100L": g_per_dGH_100L,
         "dose_tank_g": g_shrimp_tank, "dose_tank_mL_approx": ml_shrimp_tank_approx,
@@ -361,4 +382,4 @@ config = {
 buf = io.BytesIO(json.dumps(config, indent=2, ensure_ascii=False).encode("utf-8"))
 st.download_button("💾 Salvar configuração (JSON)", data=buf, file_name="config_doser.json", mime="application/json")
 
-st.markdown('<div class="muted">Versão 1.5 • KPIs e layout compacto • Dicas: use doses fracionadas e ajuste consumos após 1–2 semanas de medições.</div>', unsafe_allow_html=True)
+st.markdown('<div class="muted">Versão 1.7 • Realce funcional • Sugestão de Nitrogênio integrada ao Resumo</div>', unsafe_allow_html=True)
