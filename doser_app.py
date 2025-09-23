@@ -1,4 +1,4 @@
-import io, json, math
+import io, json, math, datetime as dt
 import pandas as pd
 import streamlit as st
 
@@ -44,7 +44,6 @@ st.markdown(f"""
            border:1px solid var(--border); background:#111827; color:var(--muted); margin-right:6px; font-size:12px; }}
   .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
 
-  /* KPI grid */
   .kpi {{
     display:flex; flex-direction:column; gap:6px; padding:14px; border-radius:16px;
     border:1px solid var(--border); background:linear-gradient(180deg, rgba(2,6,23,0.4), rgba(2,6,23,0.2));
@@ -63,7 +62,7 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# ============== Helper functions (comuns) ==============
+# ============== Helpers comuns ==============
 def kpi(title, value, subtitle="", cls=""):
     return f"""
     <div class="kpi">
@@ -73,9 +72,8 @@ def kpi(title, value, subtitle="", cls=""):
     </div>
     """
 
-# ---------------- Plantado helpers ----------------
+# -------- Plantado helpers --------
 def conversions(density_g_per_ml: float, pctN: float, pctP: float):
-    """mg por mL de NO3 e PO4 a partir de %N e %P (elementares) e densidade."""
     mgN_per_mL = pctN/100.0 * density_g_per_ml * 1000.0
     mgP_per_mL = pctP/100.0 * density_g_per_ml * 1000.0
     mgNO3_per_mL = mgN_per_mL * (62.0/14.0)   # N -> NO3
@@ -100,12 +98,9 @@ def ratio_redfield(no3_ppm: float, po4_ppm: float):
     else: status = "bad"
     return r, status
 
-# ---------------- Reef helpers ----------------
-def dkh_from_meq(meq):
-    return meq * 2.8  # 1 meq/L ≈ 2.8 dKH
-
-def meq_from_dkh(dkh):
-    return dkh / 2.8
+# -------- Reef helpers --------
+def dkh_from_meq(meq): return meq * 2.8
+def meq_from_dkh(dkh): return dkh / 2.8
 
 # ===================== Header =====================
 colh1, colh2 = st.columns([1,1.2])
@@ -116,7 +111,6 @@ with colh1:
       <div class="muted">Escolha o modo: Plantado + Camarões ou Marinho (Reef). Cálculos e UI se adaptam ao modo.</div>
     </div>
     """, unsafe_allow_html=True)
-
 with colh2:
     mode = st.radio("Tipo de aquário", ["Doce + Camarões", "Marinho (Reef)"], horizontal=True, index=0)
 
@@ -177,12 +171,11 @@ with st.sidebar:
         ml_khplus_per_dKH_100L = st.number_input("KH+ (mL) p/ +1°dKH /100 L", min_value=1.0, value=30.0, step=1.0)
 
     else:
-        # --------- REEF inputs ---------
         st.markdown("---")
         st.markdown("### 🧪 Testes atuais (Reef)")
         kh_now = st.number_input("KH atual (°dKH)", min_value=0.0, value=8.0, step=0.1)
-        ca_now = st.number_input("Cálcio atual (mg/L ou ppm)", min_value=200.0, value=420.0, step=5.0)
-        mg_now = st.number_input("Magnésio atual (mg/L ou ppm)", min_value=800.0, value=1300.0, step=10.0)
+        ca_now = st.number_input("Cálcio atual (ppm)", min_value=200.0, value=420.0, step=5.0)
+        mg_now = st.number_input("Magnésio atual (ppm)", min_value=800.0, value=1300.0, step=10.0)
 
         st.markdown("---")
         st.markdown("### 🎯 Alvos (Reef)")
@@ -197,20 +190,17 @@ with st.sidebar:
         mg_cons = st.number_input("Consumo diário de Mg (ppm/dia)", min_value=0.0, value=1.0, step=0.5)
 
         st.markdown("---")
-        st.markdown("### 🧪 Potência dos suplementos (Fusion 1 & 2)")
-        # Regras dadas:
-        # 1 mL/25 L → +4 ppm Ca (Fusion 1) e +0,176 meq/L de alcalinidade (Fusion 2)
+        st.markdown("### 🧪 Potência (Fusion 1 & 2)")
         ca_ppm_per_ml_per_25L = st.number_input("Fusion 1: +ppm Ca por 1 mL/25 L", min_value=0.1, value=4.0, step=0.1)
         alk_meq_per_ml_per_25L = st.number_input("Fusion 2: +meq/L por 1 mL/25 L", min_value=0.01, value=0.176, step=0.001)
-        max_ml_per_25L_day = st.number_input("Máx. mL por 25 L por dia (cada produto)", min_value=0.5, value=4.0, step=0.5)
+        max_ml_per_25L_day = st.number_input("Máx. mL por 25 L por dia (cada)", min_value=0.5, value=4.0, step=0.5)
         max_kh_raise_net = st.number_input("Limite de aumento líquido de KH por dia (°dKH)", min_value=0.2, value=1.0, step=0.1)
 
 # ======================================================================
-# ===================== LÓGICA POR MODO ================================
+# ===================== DOCE + CAMARÕES ================================
 # ======================================================================
-
 if mode == "Doce + Camarões":
-    # ---------- Cálculos Plantado ----------
+    # Cálculos macro
     tpa_eff = tpa if do_tpa else 0.0
     f_dilution = 1.0 - (tpa_eff/vol)
 
@@ -221,7 +211,7 @@ if mode == "Doce + Camarões":
     dNO3_per_mL = mgNO3_per_mL / vol
     dPO4_per_mL = mgPO4_per_mL / vol
 
-    if 'target_mode' in locals() and target_mode.startswith("PO₄"):
+    if target_mode.startswith("PO₄"):
         dPO4_needed = max(0.0, po4_target - po4_base)
         mL_now = (dPO4_needed / dPO4_per_mL) if dPO4_per_mL > 0 else 0.0
         po4_after = po4_base + mL_now * dPO4_per_mL
@@ -243,21 +233,16 @@ if mode == "Doce + Camarões":
     r_before, status_before = ratio_redfield(no3_base, po4_base)
     r_after,  status_after  = ratio_redfield(no3_after, po4_after)
 
-    # Nitrogênio isolado
+    # N isolado (6 mL/100L -> +4.8 ppm NO3)
     ppm_per_mL_per_100L = adds_ppm_per_100L / dose_mL_per_100L
     ppm_per_mL_tank = ppm_per_mL_per_100L * (100.0 / vol)
     need_N_by_ratio = (r_after < 8)
-    need_N_by_range = ('target_mode' in locals() and target_mode.startswith("PO₄") and (no3_after < no3_min))
+    need_N_by_range = (target_mode.startswith("PO₄") and (no3_after < no3_min))
     suggest_N = (ppm_per_mL_tank > 0) and (need_N_by_ratio or need_N_by_range)
-    N_dose_mL = 0.0
-    N_target_ppm = (no3_min + no3_max)/2 if 'no3_min' in locals() else 12.0
-    no3_after_N = no3_after
-    if suggest_N:
-        deficit = max(0.0, N_target_ppm - no3_after)
-        N_dose_mL = deficit / ppm_per_mL_tank
-        no3_after_N = no3_after + N_dose_mL * ppm_per_mL_tank
+    N_target_ppm = (no3_min + no3_max)/2 if target_mode.startswith("PO₄") else no3_target
+    N_dose_mL = max(0.0, (N_target_ppm - no3_after) / ppm_per_mL_tank) if suggest_N else 0.0
 
-    # ---------- KPIs ----------
+    # KPIs
     kpi_cols = st.columns(5)
     with kpi_cols[0]:
         st.markdown(kpi("🎯 Dose agora (macro)", f"{mL_now:.2f} mL", "para atingir o alvo"), unsafe_allow_html=True)
@@ -267,12 +252,11 @@ if mode == "Doce + Camarões":
         rf_cls = "good" if status_after=="good" else ("warn" if status_after=="warn" else "bad")
         st.markdown(kpi("📈 Redfield pós-dose", f"{r_after:.2f}:1", "NO₃:PO₄ (ppm)", rf_cls), unsafe_allow_html=True)
     with kpi_cols[3]:
-        # placeholder GH/KH KPI será calculado abaixo
         pass
     with kpi_cols[4]:
         pass
 
-    # ---------- Resumo Macro ----------
+    # Resumo
     left, right = st.columns([1.1, 1])
     with left:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -284,9 +268,9 @@ if mode == "Doce + Camarões":
         st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         st.write(f"**Correção agora:** **{mL_now:.2f} mL**  → após dose: NO₃ **{no3_after:.2f} ppm**, PO₄ **{po4_after:.2f} ppm**.")
 
-        if 'target_mode' in locals() and target_mode.startswith("PO₄") and (warn_no3):
+        if target_mode.startswith("PO₄") and (warn_no3):
             st.markdown('<span class="bad">Atenção:</span> NO₃ fora da faixa desejada.', unsafe_allow_html=True)
-        if 'target_mode' in locals() and (not target_mode.startswith("PO₄")) and (warn_po4):
+        if (not target_mode.startswith("PO₄")) and (warn_po4):
             st.markdown('<span class="bad">Atenção:</span> PO₄ fora da faixa desejada.', unsafe_allow_html=True)
 
         if suggest_N and N_dose_mL > 0.0001:
@@ -295,22 +279,20 @@ if mode == "Doce + Camarões":
                 f"para atingir **{N_target_ppm:.2f} ppm** de **NO₃** desejado."
             )
             st.caption(
-                f"Potência usada: {dose_mL_per_100L:.1f} mL/100 L → +{adds_ppm_per_100L:.1f} ppm NO₃ "
-                f"(≈ {ppm_per_mL_per_100L:.2f} ppm/mL em 100 L; no seu aquário: {ppm_per_mL_tank:.2f} ppm/mL)."
+                f"Regra: {dose_mL_per_100L:.1f} mL/100 L → +{adds_ppm_per_100L:.1f} ppm NO₃ "
+                f"(≈ {(adds_ppm_per_100L/dose_mL_per_100L):.2f} ppm/mL em 100 L; no seu aquário: {ppm_per_mL_tank:.2f} ppm/mL)."
             )
         st.markdown('</div>', unsafe_allow_html=True)
 
     with right:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("## Redfield & pH")
-        r_before, _ = ratio_redfield(no3_base, po4_base)
-        r_after,  status_after  = ratio_redfield(no3_after, po4_after)
         st.write(f"Antes da dose: **{r_before:.2f}:1**  |  Depois: **{r_after:.2f}:1**")
         st.write(f"pH atual: **{pH_now:.1f}**")
-        st.caption("Guia prático para íons (ppm): ~10:1 (verde 8–15, amarelo 6–18).")
+        st.caption("Guia prático (ppm íons): alvo ~10:1 (verde 8–15, amarelo 6–18).")
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---------- Agenda ----------
+    # Agenda
     order_days, micro_days = schedule_days(tpa_day, micro_freq)
     micro_per_app = micro_per30 * (vol / 30.0)
     rows = []
@@ -322,30 +304,24 @@ if mode == "Doce + Camarões":
         if j == 0 and mL_now > 1e-4: note.append("Correção")
         rows.append({"Dia": d, "Macro (mL)": round(macro, 2), "Micro (mL)": round(micro, 2), "Obs.": " + ".join(note)})
     df_sched = pd.DataFrame(rows)
-
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("## Agenda semanal (macro & micro)")
     st.dataframe(df_sched, use_container_width=True, hide_index=True)
-    csv_bytes = df_sched.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Baixar agenda (CSV)", data=csv_bytes, file_name="agenda_dosagem.csv", mime="text/csv")
+    st.download_button("⬇️ Baixar agenda (CSV)", data=df_sched.to_csv(index=False).encode(), file_name="agenda_dosagem.csv", mime="text/csv")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---------- GH & KH (ReeFlowers) ----------
-    # GH (pó): 2 g/100L → +1°dGH  (≈ 1,15 mL/g)
+    # GH / KH detalhes
     dGH_tank = max(0.0, gh_target - gh_now)
-    g_per_dGH_100L = g_per_dGH_100L if 'g_per_dGH_100L' in locals() else 2.0
     g_shrimp_tank = dGH_tank * (vol/100.0) * g_per_dGH_100L
     ml_per_g_powder = 2.3/2.0
     ml_shrimp_tank_approx = g_shrimp_tank * ml_per_g_powder
 
-    g_shrimp_tpa = (remin_mix_to if 'remin_mix_to' in locals() else dGH_tank) * ( (tpa if 'tpa' in locals() else 0)/100.0) * g_per_dGH_100L
+    g_shrimp_tpa = remin_mix_to * (tpa/100.0) * g_per_dGH_100L
     ml_shrimp_tpa_approx = g_shrimp_tpa * ml_per_g_powder
 
-    # KH+: 30 mL/100L → +1°dKH ; manutenção 2 mL/100L/dia
-    ml_khplus_per_dKH_100L = ml_khplus_per_dKH_100L if 'ml_khplus_per_dKH_100L' in locals() else 30.0
-    dKH_tank = max(0.0, (kh_target if 'kh_target' in locals() else 3.0) - kh_now)
+    dKH_tank = max(0.0, kh_target - kh_now)
     ml_khplus_tank = dKH_tank * (vol/100.0) * ml_khplus_per_dKH_100L
-    ml_khplus_tpa  = (kh_target if 'kh_target' in locals() else 3.0) * ((tpa if 'tpa' in locals() else 0)/100.0) * ml_khplus_per_dKH_100L
+    ml_khplus_tpa  = kh_target * (tpa/100.0) * ml_khplus_per_dKH_100L
     ml_khplus_daily = 2.0 * (vol/100.0)
 
     c1, c2 = st.columns(2)
@@ -353,21 +329,21 @@ if mode == "Doce + Camarões":
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("## GH – Shrimp Minerals (pó)")
         st.write(f"Δ GH (aquário): **{dGH_tank:.2f} °dH** → **{g_shrimp_tank:.2f} g** (≈ {ml_shrimp_tank_approx:.2f} mL).")
-        if 'tpa' in locals() and tpa > 0:
-            st.write(f"Remineralizar TPA: alvo **{(remin_mix_to if 'remin_mix_to' in locals() else dGH_tank):.2f} °dH** em **{tpa:.0f} L** → **{g_shrimp_tpa:.2f} g** (≈ {ml_shrimp_tpa_approx:.2f} mL).")
+        if do_tpa and tpa > 0:
+            st.write(f"Remineralizar TPA: alvo **{remin_mix_to:.2f} °dH** em **{tpa:.0f} L** → **{g_shrimp_tpa:.2f} g** (≈ {ml_shrimp_tpa_approx:.2f} mL).")
         st.caption("Regra: 2 g (~2,3 mL) elevam +1 °dH em 100 L.")
         st.markdown('</div>', unsafe_allow_html=True)
     with c2:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown("## KH – ReeFlowers KH+")
         st.write(f"Δ KH (aquário): **{dKH_tank:.2f} °dKH** → **{ml_khplus_tank:.2f} mL** de KH+.")
-        if 'tpa' in locals() and tpa > 0:
-            st.write(f"Preparar TPA: alvo **{(kh_target if 'kh_target' in locals() else 3.0):.2f} °dKH** em **{tpa:.0f} L** → **{ml_khplus_tpa:.2f} mL** de KH+.")
+        if do_tpa and tpa > 0:
+            st.write(f"Preparar TPA: alvo **{kh_target:.2f} °dKH** em **{tpa:.0f} L** → **{ml_khplus_tpa:.2f} mL** de KH+.")
         st.write(f"Manutenção diária sugerida: **{ml_khplus_daily:.2f} mL/dia** (2 mL/100 L). Ajuste conforme teste.")
         st.caption("Regra: 30 mL/100 L → +1 °dKH.")
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---------- Tabela faixas (Neo/Caridina) ----------
+    # Tabela faixas (Neo/Caridina)
     data = [
         {"Grupo": "Neocaridina davidi (Red Cherry, etc.)", "pH_range": (6.5, 7.8), "GH_range": (6.0, 12.0), "KH_range": (3.0, 8.0)},
         {"Grupo": "Caridina cantonensis (Crystal/Bee/Taiwan Bee)", "pH_range": (5.5, 6.5), "GH_range": (4.0, 6.0), "KH_range": (0.0, 2.0)},
@@ -387,12 +363,9 @@ if mode == "Doce + Camarões":
     df_display = df_params[["Grupo", "pH", "GH (°dH)", "KH (°dKH)"]].copy()
 
     def _highlight_fw(_, df_params=df_params, pH_now=pH_now, gh_now=gh_now, kh_now=kh_now):
-        styles = pd.DataFrame('', index=df_display.index, columns=df_display.columns)
-        for i in df_display.index:
+        styles = pd.DataFrame('', index=_.index, columns=_.columns)
+        for i in _.index:
             row = df_params.loc[i]
-            styles.at[i, "pH"] = 'background-color:#111827; color:#e2e8f0;'
-            styles.at[i, "GH (°dH)"] = 'background-color:#111827; color:#e2e8f0;'
-            styles.at[i, "KH (°dKH)"] = 'background-color:#111827; color:#e2e8f0;'
             if row["pH_min"] <= pH_now <= row["pH_max"]:
                 styles.at[i, "pH"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
             if row["GH_min"] <= gh_now <= row["GH_max"]:
@@ -403,82 +376,55 @@ if mode == "Doce + Camarões":
 
     styled = df_display.style.apply(_highlight_fw, axis=None)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("## Faixas recomendadas (realce pelos seus valores atuais)")
+    st.markdown("## Faixas recomendadas (Doce – camarões)")
     st.markdown(styled.to_html(), unsafe_allow_html=True)
-    st.caption("Compromisso para manter Neo e Caridina juntos: pH ~6,8–7,0; GH 6–7; KH 2–3 (não ideal para linhagens mais sensíveis).")
+    st.caption("Compromisso para manter Neo e Caridina juntos: pH ~6,8–7,0; GH 6–7; KH 2–3.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # ---------- Export ----------
+    # Export config
     config = {
         "mode": "freshwater_shrimp",
         "tank": {"volume_L": vol, "do_tpa_now": do_tpa, "tpa_L": tpa},
         "tests": {"pH": pH_now, "NO3_ppm": no3_now, "PO4_ppm": po4_now, "GH_dH": gh_now, "KH_dKH": kh_now},
-        "targets": {"mode": "PO4" if 'target_mode' in locals() and target_mode.startswith("PO₄") else "NO3",
-                    "PO4_ppm": po4_target if 'po4_target' in locals() else None,
-                    "NO3_ppm": no3_target if 'no3_target' in locals() else None,
-                    "GH_dH": gh_target, "KH_dKH": (kh_target if 'kh_target' in locals() else None)},
-        "macro": {"pctN": pctN, "pctP": pctP, "density_g_per_ml": density,
-                  "ppm_per_mL": {"PO4": (mgPO4_per_mL/vol), "NO3": (mgNO3_per_mL/vol)},
-                  "dose_now_mL": mL_now, "after": {"NO3_ppm": no3_after, "PO4_ppm": po4_after},
-                  "daily_macro_mL": mL_day_macro, "NO3_drift_ppm_day": no3_drift},
-        "N_fert": {"dose_mL_per_100L": dose_mL_per_100L, "adds_ppm_per_100L": adds_ppm_per_100L,
-                   "ppm_per_mL_per_100L": ppm_per_mL_per_100L, "ppm_per_mL_tank": ppm_per_mL_tank,
-                   "suggested": suggest_N, "dose_now_mL": N_dose_mL, "target_NO3_ppm": N_target_ppm, "after_NO3_ppm": no3_after_N},
-        "gh_kh": {
-            "g_per_dGH_100L": g_per_dGH_100L,
-            "dose_tank_g": g_shrimp_tank, "dose_tank_mL_approx": ml_shrimp_tank_approx,
-            "TPA_mix_to_GH": (remin_mix_to if 'remin_mix_to' in locals() else None),
-            "dose_TPA_g": g_shrimp_tpa, "dose_TPA_mL_approx": ml_shrimp_tpa_approx,
-            "ml_khplus_per_dKH_100L": ml_khplus_per_dKH_100L, "KHplus_mL_tank": ml_khplus_tank,
-            "KHplus_mL_TPA": ml_khplus_tpa, "KHplus_mL_daily_hint": 2.0*(vol/100.0)
-        },
-        "redfield": {"before_NO3_PO4": r_before, "after_NO3_PO4": r_after}
+        "targets": {"mode": "PO4" if target_mode.startswith("PO₄") else "NO3",
+                    "PO4_ppm": po4_target, "NO3_ppm": no3_target, "GH_dH": gh_target, "KH_dKH": kh_target},
     }
-    buf = io.BytesIO(json.dumps(config, indent=2, ensure_ascii=False).encode("utf-8"))
-    st.download_button("💾 Salvar configuração (JSON)", data=buf, file_name="config_doser.json", mime="application/json")
-    st.markdown('<div class="muted">Versão 2.0 • Plantado & Camarões + Modo Marinho</div>', unsafe_allow_html=True)
+    st.download_button("💾 Salvar configuração (JSON)", data=json.dumps(config, indent=2, ensure_ascii=False).encode(), file_name="config_doser_fw.json", mime="application/json")
+    st.markdown('<div class="muted">Versão 2.2 • Reef: gráfico + histórico • Fix na tabela Reef</div>', unsafe_allow_html=True)
 
 # ======================================================================
 # ===================== MODO MARINHO (REEF) ============================
 # ======================================================================
 else:
-    # Potência por mL no SEU aquário (escala por volume)
-    ca_per_ml_ppm = ca_ppm_per_ml_per_25L * (25.0 / vol)         # ppm Ca por mL no seu volume
-    kh_per_ml_dkh = dkh_from_meq(alk_meq_per_ml_per_25L) * (25.0 / vol)  # dKH por mL no seu volume
-    max_ml_day_tank = max_ml_per_25L_day * (vol / 25.0)          # limite diário por produto
+    # Potência por mL (no seu aquário)
+    ca_per_ml_ppm = ca_ppm_per_ml_per_25L * (25.0 / vol)
+    kh_per_ml_dkh = dkh_from_meq(alk_meq_per_ml_per_25L) * (25.0 / vol)
+    max_ml_day_tank = max_ml_per_25L_day * (vol / 25.0)
 
-    # Deltas até o alvo
+    # Deltas até alvo
     dKH_needed = max(0.0, kh_target - kh_now)
     dCa_needed = max(0.0, ca_target - ca_now)
     dMg_needed = max(0.0, mg_target - mg_now)
 
-    # Planejamento de KH: subir NET +1 dKH/dia (ou limite configurado), compensando consumo
-    desired_kh_increase_today = min(dKH_needed, max_kh_raise_net + kh_cons)  # precisa dosar além do consumo
+    # Planejamento diário: alvo de KH líquido limitado
+    desired_kh_increase_today = min(dKH_needed, max_kh_raise_net + kh_cons)  # compensando consumo
     ml_f2_for_kh_today = (desired_kh_increase_today / kh_per_ml_dkh) if kh_per_ml_dkh > 0 else 0.0
-
-    # Manutenção de Ca: pelo menos cobrir consumo
     ml_f1_maint = (ca_cons / ca_per_ml_ppm) if ca_per_ml_ppm > 0 else 0.0
 
-    # Dosagem pareada: usar a maior das necessidades (para cumprir KH e cobrir Ca)
     ml_pair = max(ml_f2_for_kh_today, ml_f1_maint)
     limited = False
     if ml_pair > max_ml_day_tank:
         ml_pair = max_ml_day_tank
         limited = True
 
-    # Efeitos previstos da dose pareada (por dia)
-    kh_gain = ml_pair * kh_per_ml_dkh
-    ca_gain = ml_pair * ca_per_ml_ppm
-    kh_net = kh_gain - kh_cons
-    ca_net = ca_gain - ca_cons
+    kh_gain = ml_pair * kh_per_ml_dkh         # bruto/dia
+    ca_gain = ml_pair * ca_per_ml_ppm         # bruto/dia
+    kh_net = kh_gain - kh_cons                # líquido/dia
+    ca_net = ca_gain - ca_cons                # líquido/dia
 
-    # Dias estimados (KH) até o alvo com esse plano
     days_kh = math.inf
     if kh_net > 0:
-        days_kh = math.ceil( dKH_needed / min(kh_net, max_kh_raise_net) )  # arredonda conservador
-
-    # Ca previsão para 7 dias nesse plano
-    ca_after_7 = ca_now + 7*ca_net
+        days_kh = math.ceil(dKH_needed / min(kh_net, max_kh_raise_net))
 
     # KPIs Reef
     kpi_cols = st.columns(4)
@@ -487,36 +433,96 @@ else:
     with kpi_cols[1]:
         st.markdown(kpi("🧪 Dose diária Fusion 2", f"{ml_pair:.1f} mL", f"{kh_gain:.2f} °dKH/dia (bruto)"), unsafe_allow_html=True)
     with kpi_cols[2]:
-        cls = "good" if 8.0 <= kh_now <= 12.0 and 380 <= ca_now <= 450 and 1250 <= mg_now <= 1350 else "warn"
+        cls = "good" if (8.0 <= kh_now <= 12.0 and 380 <= ca_now <= 450 and 1250 <= mg_now <= 1350) else "bad"
         st.markdown(kpi("🎛️ Estado atual", f"KH {kh_now:.1f} • Ca {ca_now:.0f} • Mg {mg_now:.0f}", "verde=ok, vermelho=fora", cls), unsafe_allow_html=True)
     with kpi_cols[3]:
         st.markdown(kpi("📅 Dias p/ KH alvo", "—" if days_kh==math.inf else f"~{days_kh} dias", f"alvo {kh_target:.1f} °dKH"), unsafe_allow_html=True)
 
-    # Card de resumo Reef
+    # Resumo Reef
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("## Resumo (Reef) – Reef Fusion 1 & 2 (pareados)")
     st.write(f"**Plano diário (pareado)**: adicionar **{ml_pair:.1f} mL** de **Fusion 1** e **{ml_pair:.1f} mL** de **Fusion 2**.")
     st.write(f"→ Efeito bruto estimado: **+{kh_gain:.2f} °dKH/dia** e **+{ca_gain:.1f} ppm Ca/dia**.")
-    st.write(f"→ Considerando consumo: **KH líquido ~ {kh_net:.2f} °dKH/dia**, **Ca líquido ~ {ca_net:.1f} ppm/dia**.")
+    st.write(f"→ Considerando consumo: KH líquido ~ **{kh_net:.2f} °dKH/dia**, Ca líquido ~ **{ca_net:.1f} ppm/dia**.")
     if limited:
         st.markdown('<span class="bad">Limitado pelo fabricante:</span> dose diária capada ao máximo permitido.', unsafe_allow_html=True)
-    st.caption("Regra do fabricante: não exceder **4 mL/25 L/dia** de cada parte; dose as partes em locais diferentes e com alguns minutos de intervalo. Nunca misture.")
+    st.caption("Regras: dose as partes em locais diferentes; não exceder 4 mL/25 L/dia de cada. Nunca misture.")
 
-    # Observações inteligentes
-    notes = []
-    if kh_net < max_kh_raise_net and dKH_needed > 0 and not limited:
-        notes.append("Para cumprir +1 °dKH/dia líquido, aumente ligeiramente a dose (sem ultrapassar o limite diário).")
-    if ca_now > ca_target:
-        notes.append("Cálcio acima do alvo: considere dosar temporariamente **apenas Fusion 2** até o KH se alinhar.")
-    if dCa_needed > 0 and ca_net <= 0:
-        notes.append("Se o cálcio não estiver subindo no ritmo desejado, avalie **complemento específico de Ca**.")
-    if dMg_needed > 0:
-        notes.append("Fusion 1 não corrige magnésio de forma precisa; para Mg abaixo do alvo, use **suplemento específico de Mg**.")
-    if notes:
-        st.markdown("<br/>".join(f"• {n}" for n in notes), unsafe_allow_html=True)
+    # ---------------- Projeção (gráficos) ----------------
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("## Projeção (KH, Ca, Mg)")
+    proj_days = st.slider("Dias para projetar", min_value=7, max_value=30, value=14, step=1)
+    kh_list, ca_list, mg_list, days = [], [], [], []
+    kh_val, ca_val, mg_val = kh_now, ca_now, mg_now
+
+    for d in range(proj_days+1):
+        days.append(d)
+        kh_list.append(kh_val)
+        ca_list.append(ca_val)
+        mg_list.append(mg_val)
+        # incrementos diários (cap net KH)
+        kh_increment = min(kh_gain - kh_cons, max_kh_raise_net)
+        ca_increment = ca_gain - ca_cons
+        mg_increment = -mg_cons  # sem ganho assumido pelo F1 (não especificado)
+        # aplica sem ultrapassar alvo
+        kh_val = min(kh_target, kh_val + max(0.0, kh_increment))
+        ca_val = min(ca_target, ca_val + ca_increment)
+        mg_val = min(mg_target, mg_val + mg_increment) if mg_increment > 0 else max(mg_target, mg_val + mg_increment)
+
+    df_proj = pd.DataFrame({"Dia": days, "KH (°dKH)": kh_list, "Ca (ppm)": ca_list, "Mg (ppm)": mg_list})
+    st.line_chart(df_proj.set_index("Dia"))
+    st.caption("Obs.: Mg do Fusion 1 não é quantificado pelo fabricante → projeção de Mg considera apenas consumo (use suplemento específico se necessário).")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Tabela de faixas Reef (verde dentro, vermelho fora)
+    # ---------------- Histórico (CSV) ----------------
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("## Histórico Reef (CSV)")
+
+    if "reef_history" not in st.session_state:
+        st.session_state.reef_history = pd.DataFrame(columns=[
+            "timestamp","volume_L",
+            "KH_atual","Ca_atual","Mg_atual",
+            "KH_ideal","Ca_ideal","Mg_ideal",
+            "KH_cons","Ca_cons","Mg_cons",
+            "dose_pair_mL","KH_gain_dia","Ca_gain_dia",
+            "KH_liq_dia","Ca_liq_dia"
+        ])
+
+    up = st.file_uploader("Carregar histórico existente (CSV)", type="csv")
+    if up is not None:
+        try:
+            st.session_state.reef_history = pd.read_csv(up)
+            st.success("Histórico carregado.")
+        except Exception as e:
+            st.error(f"Não consegui ler o CSV: {e}")
+
+    obs = st.text_input("Observações (opcional)")
+    if st.button("➕ Adicionar linha com sessão atual"):
+        row = {
+            "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+            "volume_L": vol,
+            "KH_atual": kh_now, "Ca_atual": ca_now, "Mg_atual": mg_now,
+            "KH_ideal": kh_target, "Ca_ideal": ca_target, "Mg_ideal": mg_target,
+            "KH_cons": kh_cons, "Ca_cons": ca_cons, "Mg_cons": mg_cons,
+            "dose_pair_mL": round(ml_pair,2),
+            "KH_gain_dia": round(kh_gain,3), "Ca_gain_dia": round(ca_gain,2),
+            "KH_liq_dia": round(kh_net,3), "Ca_liq_dia": round(ca_net,2),
+        }
+        df = pd.DataFrame([row])
+        if obs:
+            df["obs"] = obs
+            if "obs" not in st.session_state.reef_history.columns:
+                st.session_state.reef_history["obs"] = ""
+        st.session_state.reef_history = pd.concat([st.session_state.reef_history, df], ignore_index=True)
+        st.success("Linha adicionada ao histórico.")
+
+    st.dataframe(st.session_state.reef_history, use_container_width=True)
+    csv_hist = st.session_state.reef_history.to_csv(index=False).encode()
+    st.download_button("⬇️ Baixar histórico (CSV)", data=csv_hist, file_name="reef_history.csv", mime="text/csv")
+    st.caption("Dica: suba este CSV na próxima sessão para continuar acumulando. Para “ficar online”, use um Google Sheet/API ou um repositório (GitHub) com automação — posso te ajudar a integrar depois.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ---- Tabela de faixas Reef (fix do KeyError) ----
     reef_df = pd.DataFrame({
         "Parâmetro": ["KH (°dKH)", "Ca (ppm)", "Mg (ppm)"],
         "Atual": [kh_now, ca_now, mg_now],
@@ -524,28 +530,27 @@ else:
         "min": [8.0, 380.0, 1250.0],
         "max": [12.0, 450.0, 1350.0],
     })
+    reef_display = reef_df[["Parâmetro", "Atual", "Faixa"]].copy()
 
-    def _style_reef(df):
-        styles = pd.DataFrame('', index=df.index, columns=df.columns)
-        for i, row in df.iterrows():
-            val = row["Atual"]
-            mn, mx = row["min"], row["max"]
+    def _style_reef(df_show, limits=reef_df[["min","max"]]):
+        styles = pd.DataFrame('', index=df_show.index, columns=df_show.columns)
+        for i in df_show.index:
+            mn, mx = limits.loc[i,"min"], limits.loc[i,"max"]
+            val = df_show.loc[i,"Atual"]
             if mn <= val <= mx:
                 styles.at[i, "Atual"] = 'background-color:#065f46; color:#ecfeff; font-weight:600;'
             else:
                 styles.at[i, "Atual"] = 'background-color:#7f1d1d; color:#fee2e2; font-weight:600;'
         return styles
 
-    reef_display = reef_df[["Parâmetro", "Atual", "Faixa"]].copy()
     styled_reef = reef_display.style.apply(_style_reef, axis=None)
-
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("## Faixas recomendadas (Reef)")
     st.markdown(styled_reef.to_html(), unsafe_allow_html=True)
-    st.caption("Padrão usado: **KH 8–12**, **Ca 380–450 ppm**, **Mg 1250–1350 ppm**.")
+    st.caption("Padrão: KH 8–12 • Ca 380–450 ppm • Mg 1250–1350 ppm.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Export Reef
+    # Export config Reef
     cfg_reef = {
         "mode": "reef",
         "tank": {"volume_L": vol},
@@ -565,7 +570,5 @@ else:
             "days_kh_to_target": None if days_kh==math.inf else days_kh
         }
     }
-    buf2 = io.BytesIO(json.dumps(cfg_reef, indent=2, ensure_ascii=False).encode("utf-8"))
-    st.download_button("💾 Salvar configuração Reef (JSON)", data=buf2, file_name="config_doser_reef.json", mime="application/json")
-
-    st.markdown('<div class="muted">Versão 2.0 • Modo Marinho com Fusion 1 & 2 (pareados)</div>', unsafe_allow_html=True)
+    st.download_button("💾 Salvar configuração Reef (JSON)", data=json.dumps(cfg_reef, indent=2, ensure_ascii=False).encode(), file_name="config_doser_reef.json", mime="application/json")
+    st.markdown('<div class="muted">Versão 2.2 • Reef: gráfico + histórico • Fix na tabela Reef</div>', unsafe_allow_html=True)
