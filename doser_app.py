@@ -442,4 +442,167 @@ else:
     st.markdown("## Resumo (Reef) – Fusion 1 & 2 (pareados)")
     st.write(f"**Plano diário**: adicionar **{ml_pair:.2f} mL** de **Fusion 1** e **{ml_pair:.2f} mL** de **Fusion 2**.")
     st.write(f"→ Efeito bruto estimado: **+{kh_gain:.2f} °dKH/dia** e **+{ca_gain:.2f} ppm Ca/dia**.")
-    st.write(f"
+    st.write(f"→ Considerando consumo: KH líquido ~ **{kh_net:.2f} °dKH/dia**, Ca líquido ~ **{ca_net:.2f} ppm/dia**.")
+    if limited: st.markdown('<span class="bad">Limitado pelo fabricante:</span> dose diária capada ao máximo permitido.', unsafe_allow_html=True)
+    st.caption("Regras: dosar as partes em locais diferentes; não exceder 4 mL/25 L/dia de cada. Nunca misture.")
+
+    # --------- Visualização: Histórico (Altair) / Projeção ----------
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("## Visualização")
+    view_mode = st.radio("Mostrar", ["Histórico (valores medidos)", "Projeção (simulada)"], horizontal=True, index=0)
+
+    if view_mode.startswith("Histórico"):
+        st.markdown("### Gráfico histórico (KH, Ca, Mg) por data")
+        if "reef_history" in st.session_state and not st.session_state.reef_history.empty:
+            dfh = st.session_state.reef_history.copy()
+            dfh["timestamp"] = pd.to_datetime(dfh["timestamp"], errors="coerce")
+            dfh = dfh.dropna(subset=["timestamp"]).sort_values("timestamp")
+            # Altair long-format
+            df_long = dfh.melt(id_vars=["timestamp"], value_vars=["KH_atual","Ca_atual","Mg_atual"],
+                               var_name="Parametro", value_name="Valor")
+            line = (alt.Chart(df_long)
+                    .mark_line(interpolate='monotone', strokeWidth=2.5)
+                    .encode(x=alt.X('timestamp:T', axis=alt.Axis(title='Data', format='%d/%m', labelAngle=-20)),
+                            y=alt.Y('Valor:Q', axis=alt.Axis(title='Valor')),
+                            color=alt.Color('Parametro:N', legend=alt.Legend(title=None)),
+                            tooltip=[alt.Tooltip('timestamp:T', title='Data', format='%d/%m/%Y %H:%M'),
+                                     alt.Tooltip('Parametro:N', title='Parâmetro'),
+                                     alt.Tooltip('Valor:Q', title='Valor', format='.2f')])
+                    .properties(height=260))
+            st.altair_chart(line, use_container_width=True)
+
+            # Consumo observado (robusto; 2 casas)
+            df_plot = dfh.set_index("timestamp")[["KH_atual","Ca_atual","Mg_atual"]]
+            dt_days = df_plot.index.to_series().diff().dt.total_seconds().div(86400.0)
+            dt_days = dt_days.replace([0, None], pd.NA).fillna(1.0)
+            df_obs = df_plot.copy()
+            for col in ["KH_atual","Ca_atual","Mg_atual"]:
+                delta = df_obs[col].diff()
+                per_day = (delta / dt_days).replace([pd.NA, float("inf"), -float("inf")], 0)
+                df_obs[col+"_dday"] = per_day
+            def med_cons(series, clamp=None):
+                s = pd.to_numeric(series, errors="coerce").dropna()
+                if clamp is not None: s = s.clip(lower=-clamp, upper=clamp)
+                return float(max(0.0, round(-s.median(), 2))) if not s.empty else 0.0
+            kh_cons_obs = med_cons(df_obs["KH_atual_dday"], clamp=3.0)
+            ca_cons_obs = med_cons(df_obs["Ca_atual_dday"], clamp=50.0)
+            mg_cons_obs = med_cons(df_obs["Mg_atual_dday"], clamp=20.0)
+
+            k1,k2,k3 = st.columns(3)
+            with k1: st.markdown(kpi("KH – consumo observado", f"{kh_cons_obs:.2f} °dKH/dia"), unsafe_allow_html=True)
+            with k2: st.markdown(kpi("Ca – consumo observado", f"{ca_cons_obs:.2f} ppm/dia"), unsafe_allow_html=True)
+            with k3: st.markdown(kpi("Mg – consumo observado", f"{mg_cons_obs:.2f} ppm/dia"), unsafe_allow_html=True)
+            st.caption("Consumo observado = mediana das variações diárias entre medições (intervalos irregulares ok).")
+        else:
+            st.info("Seu histórico ainda está vazio. Adicione linhas no card abaixo e o gráfico aparece aqui.")
+    else:
+        st.markdown("### Projeção por data (KH, Ca, Mg)")
+        default_start_date = dt.date.today()
+        if "reef_history" in st.session_state and not st.session_state.reef_history.empty:
+            try:
+                last_ts = pd.to_datetime(st.session_state.reef_history["timestamp"], errors="coerce").dropna()
+                if not last_ts.empty: default_start_date = last_ts.max().date()
+            except Exception: pass
+        proj_start = st.date_input("Iniciar projeção em", value=default_start_date)
+        proj_days = st.slider("Dias para projetar", min_value=7, max_value=30, value=14, step=1)
+
+        dates = pd.date_range(proj_start, periods=proj_days+1, freq="D")
+        kh_list, ca_list, mg_list = [], [], []
+        kh_val, ca_val, mg_val = kh_now, ca_now, mg_now
+        kh_list.append(kh_val); ca_list.append(ca_val); mg_list.append(mg_val)
+        for _ in range(proj_days):
+            kh_increment = min(kh_gain - kh_cons, max_kh_raise_net)
+            ca_increment = (ca_gain - ca_cons)
+            mg_increment = -mg_cons
+            kh_val = min(kh_target, kh_val + max(0.0, kh_increment))
+            ca_val = min(ca_target, ca_val + ca_increment)
+            mg_val = max(0.0, mg_val + mg_increment)
+            kh_list.append(kh_val); ca_list.append(ca_val); mg_list.append(mg_val)
+        df_proj = pd.DataFrame({"Data": dates, "KH (°dKH)": kh_list, "Ca (ppm)": ca_list, "Mg (ppm)": mg_list})
+        df_long = df_proj.melt(id_vars=["Data"], var_name="Parametro", value_name="Valor")
+        chart = (alt.Chart(df_long)
+                 .mark_line(interpolate='monotone', strokeWidth=2.5)
+                 .encode(x=alt.X('Data:T', axis=alt.Axis(title='Data', format='%d/%m', labelAngle=-20)),
+                         y=alt.Y('Valor:Q', axis=alt.Axis(title='Valor')),
+                         color='Parametro:N',
+                         tooltip=[alt.Tooltip('Data:T', title='Data', format='%d/%m/%Y'),
+                                  alt.Tooltip('Parametro:N', title='Parâmetro'),
+                                  alt.Tooltip('Valor:Q', title='Valor', format='.2f')])
+                 .properties(height=260))
+        st.altair_chart(chart, use_container_width=True)
+        st.caption("Projeção assume dose pareada diária constante e consumo fixo; Mg cai apenas pelo consumo.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Histórico Reef (CSV offline)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("## Histórico Reef (CSV offline)")
+    if "reef_history" not in st.session_state:
+        st.session_state.reef_history = pd.DataFrame(columns=[
+            "timestamp","volume_L","KH_atual","Ca_atual","Mg_atual",
+            "KH_ideal","Ca_ideal","Mg_ideal","KH_cons","Ca_cons","Mg_cons",
+            "dose_pair_mL","KH_gain_dia","Ca_gain_dia","KH_liq_dia","Ca_liq_dia","obs"
+        ])
+
+    up = st.file_uploader("Carregar CSV existente", type="csv")
+    if up is not None:
+        try:
+            st.session_state.reef_history = pd.read_csv(up)
+            st.success("Histórico carregado.")
+        except Exception as e:
+            st.error(f"Não consegui ler o CSV: {e}")
+
+    obs = st.text_input("Observações (opcional)")
+    if st.button("➕ Adicionar linha desta sessão"):
+        row = {
+            "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
+            "volume_L": vol,
+            "KH_atual": round(kh_now,2), "Ca_atual": round(ca_now,2), "Mg_atual": round(mg_now,2),
+            "KH_ideal": round(kh_target,2), "Ca_ideal": round(ca_target,2), "Mg_ideal": round(mg_target,2),
+            "KH_cons": round(kh_cons,2), "Ca_cons": round(ca_cons,2), "Mg_cons": round(mg_cons,2),
+            "dose_pair_mL": round(ml_pair,2),
+            "KH_gain_dia": round(kh_gain,2), "Ca_gain_dia": round(ca_gain,2),
+            "KH_liq_dia": round(kh_net,2), "Ca_liq_dia": round(ca_net,2),
+            "obs": obs or ""
+        }
+        st.session_state.reef_history = pd.concat([st.session_state.reef_history, pd.DataFrame([row])], ignore_index=True)
+        st.success("Linha adicionada ao histórico local.")
+
+    st.dataframe(st.session_state.reef_history, use_container_width=True)
+    st.download_button("⬇️ Baixar histórico (CSV)",
+                       data=st.session_state.reef_history.to_csv(index=False).encode(),
+                       file_name="reef_history.csv", mime="text/csv")
+    st.caption("Dica: na próxima sessão, faça upload deste CSV para continuar seu log.")
+
+    # Tabela de faixas Reef (2 casas no 'Atual')
+    reef_df = pd.DataFrame({
+        "Parâmetro": ["KH (°dKH)", "Ca (ppm)", "Mg (ppm)"],
+        "Atual": [round(kh_now,2), round(ca_now,2), round(mg_now,2)],
+        "Faixa": ["8–12", "380–450", "1250–1350"],
+        "min": [8.0, 380.0, 1250.0], "max": [12.0, 450.0, 1350.0],
+    })
+    reef_display = reef_df[["Parâmetro","Atual","Faixa"]].copy()
+    def _style_reef(df_show, limits=reef_df[["min","max"]]):
+        styles = pd.DataFrame('', index=df_show.index, columns=df_show.columns)
+        for i in df_show.index:
+            mn, mx = limits.loc[i,"min"], limits.loc[i,"max"]; val = df_show.loc[i,"Atual"]
+            styles.at[i, "Atual"] = ('background-color:#065f46; color:#ecfeff; font-weight:600;'
+                                     if mn <= val <= mx else
+                                     'background-color:#7f1d1d; color:#fee2e2; font-weight:600;')
+        return styles
+    styled_reef = reef_display.style.apply(_style_reef, axis=None)
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("## Faixas recomendadas (Reef)")
+    st.markdown(styled_reef.to_html(), unsafe_allow_html=True)
+    st.caption("Padrão: KH 8–12 • Ca 380–450 ppm • Mg 1250–1350 ppm.")
+
+    cfg = {"mode":"reef","tank":{"volume_L":vol},
+           "tests":{"KH_dKH":kh_now,"Ca_ppm":ca_now,"Mg_ppm":mg_now},
+           "targets":{"KH_dKH":kh_target,"Ca_ppm":ca_target,"Mg_ppm":mg_target},
+           "consumption_daily":{"KH_dKH":kh_cons,"Ca_ppm":ca_cons,"Mg_ppm":mg_cons},
+           "fusion":{"daily_pair_ml":ml_pair,"KH_gain_dKH":kh_gain,"Ca_gain_ppm":ca_gain,
+                     "KH_net_dKH":kh_net,"Ca_net_ppm":ca_net,"days_kh_to_target":None if days_kh==math.inf else days_kh}}
+    st.download_button("💾 Salvar configuração Reef (JSON)", data=json.dumps(cfg,indent=2,ensure_ascii=False).encode(),
+                       file_name="config_doser_reef.json", mime="application/json")
+
+    st.markdown('<div class="muted">Versão 2.8 • Banner no topo • 2 casas • histórico Reef por data (Altair)</div>', unsafe_allow_html=True)
