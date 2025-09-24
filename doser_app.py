@@ -1,9 +1,8 @@
-# doser_app.py — v3.0
+# doser_app.py — v2.9 (loader universal CSV/XLSX/XLS/NUMBERS)
 import io, json, math, datetime as dt
 import pandas as pd
 import altair as alt
 import streamlit as st
-import numbers-parser
 
 # ===================== Config base =====================
 st.set_page_config(page_title="Doser • Aquários", page_icon="💧", layout="wide")
@@ -73,105 +72,6 @@ def theme_css(mode: str) -> str:
     return "<style>:root{--primary:#22c55e}</style>" if mode=="Doce + Camarões" else "<style>:root{--primary:#60a5fa}</style>"
 
 # ============== Helpers comuns ==============
-
-# --- Leitor universal para histórico (CSV / XLSX / XLS / NUMBERS) ---
-import tempfile
-
-def load_history_any(up_file) -> pd.DataFrame | None:
-    """Lê um arquivo de histórico em CSV/XLSX/XLS/NUMBERS e devolve um DataFrame.
-       Retorna None se não conseguir ler.
-    """
-    name = (up_file.name or "").lower()
-
-    try:
-        if name.endswith(".csv"):
-            df = pd.read_csv(up_file)
-
-        elif name.endswith((".xlsx", ".xls")):
-            # requer openpyxl/xlrd dependendo do formato
-            df = pd.read_excel(up_file)
-
-        elif name.endswith(".numbers"):
-            # requer: pip install numbers-parser
-            try:
-                from numbers_parser import Document
-            except Exception as e:
-                st.error("Para abrir .numbers, instale `numbers-parser` (ou exporte para CSV no Numbers).")
-                return None
-
-            # Salva bytes em arquivo temporário porque o Document precisa de caminho
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".numbers") as tmp:
-                tmp.write(up_file.getbuffer())
-                tmp_path = tmp.name
-
-            doc = Document(tmp_path)
-
-            # tenta achar a 1ª tabela com cabeçalhos do nosso histórico
-            want = {"timestamp","volume_L","KH_atual","Ca_atual","Mg_atual"}
-            chosen = None
-            for s in doc.sheets:
-                for t in s.tables:
-                    # extrai todas as linhas da tabela
-                    mat = []
-                    for row in t.rows():
-                        cells = getattr(row, "cells", row)
-                        mat.append([getattr(c, "value", c) for c in cells])
-
-                    if not mat:
-                        continue
-                    header = [str(x) for x in mat[0]]
-                    if want.issubset(set(header)):
-                        chosen = pd.DataFrame(mat[1:], columns=header)
-                        break
-                if chosen is not None:
-                    break
-
-            # fallback: 1ª tabela do 1º sheet
-            if chosen is None:
-                s = doc.sheets[0]; t = s.tables[0]
-                mat = []
-                for row in t.rows():
-                    cells = getattr(row, "cells", row)
-                    mat.append([getattr(c, "value", c) for c in cells])
-                header = [str(x) for x in mat[0]] if mat else []
-                chosen = pd.DataFrame(mat[1:], columns=header)
-
-            df = chosen
-
-        else:
-            st.error("Formato não suportado. Use CSV, XLSX, XLS ou NUMBERS.")
-            return None
-
-        # normaliza nomes comuns (caso venham com espaços) e tipos numéricos
-        rename_map = {
-            "KH atual": "KH_atual", "Ca atual": "Ca_atual", "Mg atual": "Mg_atual",
-            "KH ideal": "KH_ideal", "Ca ideal": "Ca_ideal", "Mg ideal": "Mg_ideal",
-            "KH/dia": "KH_cons", "Ca/dia": "Ca_cons", "Mg/dia": "Mg_cons",
-            "Dose (mL)": "dose_pair_mL", "KH ganho/dia": "KH_gain_dia", "Ca ganho/dia": "Ca_gain_dia",
-            "KH líquido/dia": "KH_liq_dia", "Ca líquido/dia": "Ca_liq_dia",
-        }
-        df = df.rename(columns=rename_map)
-
-        # timestamp e arredondamento (2 casas)
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-
-        numeric_cols = [
-            "volume_L","KH_atual","Ca_atual","Mg_atual",
-            "KH_ideal","Ca_ideal","Mg_ideal",
-            "KH_cons","Ca_cons","Mg_cons",
-            "dose_pair_mL","KH_gain_dia","Ca_gain_dia","KH_liq_dia","Ca_liq_dia"
-        ]
-        for c in numeric_cols:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
-
-        return df
-
-    except Exception as e:
-        st.error("Não consegui ler o arquivo enviado. Tente exportar para CSV ou verifique o conteúdo.")
-        return None
-
 def kpi(title, value, subtitle="", cls=""):
     cls_class = f" {cls}" if cls else ""
     return f"""
@@ -236,8 +136,88 @@ def ratio_redfield(no3_ppm: float, po4_ppm: float):
 # -------- Reef helpers --------
 def dkh_from_meq(meq): return meq * 2.8
 
+# ===================== Loader universal (CSV / Excel / Numbers) =====================
+import tempfile
+def load_history_any(up_file) -> pd.DataFrame | None:
+    """Lê histórico em CSV/XLSX/XLS/NUMBERS e devolve DataFrame normalizado.
+       Retorna None se não conseguir ler.
+    """
+    name = (up_file.name or "").lower()
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(up_file)
+
+        elif name.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(up_file)
+
+        elif name.endswith(".numbers"):
+            try:
+                from numbers_parser import Document
+            except Exception:
+                st.error("Para abrir .numbers, instale `numbers-parser` no ambiente (ou exporte para CSV).")
+                return None
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".numbers") as tmp:
+                tmp.write(up_file.getbuffer())
+                tmp_path = tmp.name
+            doc = Document(tmp_path)
+
+            want = {"timestamp","volume_L","KH_atual","Ca_atual","Mg_atual"}
+            chosen = None
+            for s in doc.sheets:
+                for t in s.tables:
+                    mat = []
+                    for row in t.rows():
+                        cells = getattr(row, "cells", row)
+                        mat.append([getattr(c, "value", c) for c in cells])
+                    if not mat: continue
+                    header = [str(x) for x in mat[0]]
+                    if want.issubset(set(header)):
+                        chosen = pd.DataFrame(mat[1:], columns=header)
+                        break
+                if chosen is not None: break
+            if chosen is None:
+                s = doc.sheets[0]; t = s.tables[0]
+                mat = []
+                for row in t.rows():
+                    cells = getattr(row, "cells", row)
+                    mat.append([getattr(c, "value", c) for c in cells])
+                header = [str(x) for x in mat[0]] if mat else []
+                chosen = pd.DataFrame(mat[1:], columns=header)
+            df = chosen
+
+        else:
+            st.error("Formato não suportado. Use CSV, XLSX, XLS ou NUMBERS.")
+            return None
+
+        # Normalizações de nomes prováveis
+        rename_map = {
+            "KH atual": "KH_atual", "Ca atual": "Ca_atual", "Mg atual": "Mg_atual",
+            "KH ideal": "KH_ideal", "Ca ideal": "Ca_ideal", "Mg ideal": "Mg_ideal",
+            "KH/dia": "KH_cons", "Ca/dia": "Ca_cons", "Mg/dia": "Mg_cons",
+            "Dose (mL)": "dose_pair_mL", "KH ganho/dia": "KH_gain_dia", "Ca ganho/dia": "Ca_gain_dia",
+            "KH líquido/dia": "KH_liq_dia", "Ca líquido/dia": "Ca_liq_dia",
+        }
+        df = df.rename(columns=rename_map)
+
+        # Tipos/2 casas
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        numeric_cols = [
+            "volume_L","KH_atual","Ca_atual","Mg_atual",
+            "KH_ideal","Ca_ideal","Mg_ideal",
+            "KH_cons","Ca_cons","Mg_cons",
+            "dose_pair_mL","KH_gain_dia","Ca_gain_dia","KH_liq_dia","Ca_liq_dia"
+        ]
+        for c in numeric_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
+        return df
+
+    except Exception:
+        st.error("Não consegui ler o arquivo. Tente exportar para CSV/Excel ou verifique o conteúdo.")
+        return None
+
 # ===================== Modo persistente + Banner no topo =====================
-# usamos session_state para colorir o banner antes do seletor
 mode_default = st.session_state.get("mode", "Doce + Camarões")
 st.markdown(theme_css(mode_default), unsafe_allow_html=True)
 st.markdown(render_top_banner_svg(mode_default), unsafe_allow_html=True)
@@ -253,7 +233,7 @@ with colh1:
 with colh2:
     st.radio("Tipo de aquário", ["Doce + Camarões", "Marinho (Reef)"], horizontal=True, key="mode", index=0)
 
-# modo efetivo após escolha; re-injeta tema (reexecução cuida da cor do banner)
+# modo efetivo após escolha; re-injeta tema (o banner superior muda na próxima reexecução)
 mode = st.session_state["mode"]
 st.markdown(theme_css(mode), unsafe_allow_html=True)
 st.markdown(render_badges(mode), unsafe_allow_html=True)
@@ -297,16 +277,16 @@ with st.sidebar:
         micro_per30 = st.number_input("Micro mL/30 L (por aplicação)", min_value=0.0, value=1.25, step=0.05, format="%.2f")
         micro_freq = st.selectbox("Aplicações de micro/semana", options=[1,2,3], index=1)
 
-        st.markdown("---"); st.markdown("### 🌿 Fertilizante de Nitrogênio (isolado)")
-        dose_mL_per_100L = st.number_input("mL por dose (por 100 L)", min_value=0.1, value=6.0, step=0.1, format="%.2f")
-        adds_ppm_per_100L = st.number_input("ppm de NO₃ adicionados por dose (100 L)", min_value=0.1, value=4.8, step=0.1, format="%.2f")
+        st.markdown("---"); st.markdown("### 🌿 Nitrogênio isolado")
+        dose_mL_per_100L = st.number_input("mL por dose (100 L)", min_value=0.1, value=6.0, step=0.1, format="%.2f")
+        adds_ppm_per_100L = st.number_input("ppm NO₃ por dose (100 L)", min_value=0.1, value=4.8, step=0.1, format="%.2f")
 
-        st.markdown("---"); st.markdown("### 🧱 Alvos GH & KH (ReeFlowers)")
+        st.markdown("---"); st.markdown("### 🧱 GH & KH (ReeFlowers)")
         gh_target = st.number_input("GH alvo (°dH)", min_value=0.0, value=7.0, step=0.5, format="%.2f")
-        g_per_dGH_100L = st.number_input("Shrimp Minerals (pó): g p/ +1°dGH /100 L", min_value=0.1, value=2.0, step=0.1, format="%.2f")
-        remin_mix_to = st.number_input("Remineralizar água da TPA até GH (°dH)", min_value=0.0, value=gh_target, step=0.5, format="%.2f")
+        g_per_dGH_100L = st.number_input("Shrimp Minerals (pó): g por +1°dGH/100 L", min_value=0.1, value=2.0, step=0.1, format="%.2f")
+        remin_mix_to = st.number_input("Remineralizar TPA até GH (°dH)", min_value=0.0, value=gh_target, step=0.5, format="%.2f")
         kh_target = st.number_input("KH alvo (°dKH)", min_value=0.0, value=3.0, step=0.5, format="%.2f")
-        ml_khplus_per_dKH_100L = st.number_input("KH+ (mL) p/ +1°dKH /100 L", min_value=1.0, value=30.0, step=1.0, format="%.2f")
+        ml_khplus_per_dKH_100L = st.number_input("KH+ mL por +1°dKH/100 L", min_value=1.0, value=30.0, step=1.0, format="%.2f")
 
     else:
         st.markdown("---"); st.markdown("### 🧪 Testes atuais (Reef)")
@@ -320,15 +300,15 @@ with st.sidebar:
         mg_target = st.number_input("Mg ideal (ppm)", min_value=1100.0, value=1300.0, step=10.0, format="%.2f")
 
         st.markdown("---"); st.markdown("### 📉 Consumo diário (estimado)")
-        kh_cons = st.number_input("Consumo diário de KH (°dKH/dia)", min_value=0.0, value=0.20, step=0.05, format="%.2f")
-        ca_cons = st.number_input("Consumo diário de Ca (ppm/dia)", min_value=0.0, value=2.0, step=0.5, format="%.2f")
-        mg_cons = st.number_input("Consumo diário de Mg (ppm/dia)", min_value=0.0, value=1.0, step=0.5, format="%.2f")
+        kh_cons = st.number_input("Consumo KH (°dKH/dia)", min_value=0.0, value=0.20, step=0.05, format="%.2f")
+        ca_cons = st.number_input("Consumo Ca (ppm/dia)", min_value=0.0, value=2.0, step=0.5, format="%.2f")
+        mg_cons = st.number_input("Consumo Mg (ppm/dia)", min_value=0.0, value=1.0, step=0.5, format="%.2f")
 
         st.markdown("---"); st.markdown("### 🧪 Potência (Fusion 1 & 2)")
         ca_ppm_per_ml_per_25L = st.number_input("Fusion 1: +ppm Ca por 1 mL/25 L", min_value=0.1, value=4.0, step=0.1, format="%.2f")
         alk_meq_per_ml_per_25L = st.number_input("Fusion 2: +meq/L por 1 mL/25 L", min_value=0.01, value=0.176, step=0.001, format="%.3f")
-        max_ml_per_25L_day = st.number_input("Máx. mL por 25 L por dia (cada)", min_value=0.5, value=4.0, step=0.5, format="%.2f")
-        max_kh_raise_net = st.number_input("Limite de aumento líquido de KH por dia (°dKH)", min_value=0.2, value=1.0, step=0.1, format="%.2f")
+        max_ml_per_25L_day = st.number_input("Máx. mL por 25 L/dia (cada)", min_value=0.5, value=4.0, step=0.5, format="%.2f")
+        max_kh_raise_net = st.number_input("Limite de aumento líquido KH (°dKH/dia)", min_value=0.2, value=1.0, step=0.1, format="%.2f")
 
 # ======================================================================
 # ===================== DOCE + CAMARÕES ================================
@@ -364,7 +344,7 @@ if mode == "Doce + Camarões":
     r_before, status_before = ratio_redfield(no3_base, po4_base)
     r_after,  status_after  = ratio_redfield(no3_after, po4_after)
 
-    # N isolado
+    # Nitrogênio isolado
     ppm_per_mL_per_100L = adds_ppm_per_100L / dose_mL_per_100L
     ppm_per_mL_tank = ppm_per_mL_per_100L * (100.0 / vol)
     need_N_by_ratio = (r_after < 8)
@@ -373,7 +353,7 @@ if mode == "Doce + Camarões":
     N_target_ppm = (no3_min + no3_max)/2 if target_mode.startswith("PO₄") else no3_target
     N_dose_mL = max(0.0, (N_target_ppm - no3_after) / ppm_per_mL_tank) if suggest_N else 0.0
 
-    # KPIs (2 casas)
+    # KPIs
     k1,k2,k3,k4,k5 = st.columns(5)
     with k1: st.markdown(kpi("🎯 Dose agora (macro)", f"{mL_now:.2f} mL", "para atingir o alvo"), unsafe_allow_html=True)
     with k2: st.markdown(kpi("🗓️ Manutenção diária", f"{mL_day_macro:.2f} mL/dia", "macro baseado em PO₄"), unsafe_allow_html=True)
@@ -383,7 +363,7 @@ if mode == "Doce + Camarões":
     with k4: st.markdown(kpi("GH alvo", f"{gh_target:.2f} °dH", "ReeFlowers (pó)"), unsafe_allow_html=True)
     with k5: st.markdown(kpi("KH alvo", f"{kh_target:.2f} °dKH", "KH+"), unsafe_allow_html=True)
 
-    # Resumo macro (2 casas)
+    # Resumo macro
     left, right = st.columns([1.1, 1])
     with left:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -475,7 +455,6 @@ if mode == "Doce + Camarões":
         "KH_min":[d["KH_range"][0] for d in data],"KH_max":[d["KH_range"][1] for d in data],
     })
     df_display = df_params[["Grupo","pH","GH (°dH)","KH (°dKH)"]].copy()
-
     def _highlight_fw(df_show, df_params=df_params, pH_now=pH_now, gh_now=gh_now, kh_now=kh_now):
         styles = pd.DataFrame('', index=df_show.index, columns=df_show.columns)
         for i in df_show.index:
@@ -501,7 +480,7 @@ if mode == "Doce + Camarões":
                          "PO4_ppm":po4_target,"NO3_ppm":no3_target,"GH_dH":gh_target,"KH_dKH":kh_target}}
     st.download_button("💾 Salvar configuração (JSON)", data=json.dumps(config,indent=2,ensure_ascii=False).encode(),
                        file_name="config_doser_fw.json", mime="application/json")
-    st.markdown('<div class="muted">Versão 2.8 • Banner no topo • 2 casas • histórico Reef melhorado</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.9 • Banner no topo • 2 casas • Loader universal CSV/XLSX/XLS/NUMBERS</div>', unsafe_allow_html=True)
 
 # ======================================================================
 # ===================== MARINHO (REEF) =================================
@@ -557,7 +536,7 @@ else:
             dfh = st.session_state.reef_history.copy()
             dfh["timestamp"] = pd.to_datetime(dfh["timestamp"], errors="coerce")
             dfh = dfh.dropna(subset=["timestamp"]).sort_values("timestamp")
-            # Altair long-format
+
             df_long = dfh.melt(id_vars=["timestamp"], value_vars=["KH_atual","Ca_atual","Mg_atual"],
                                var_name="Parametro", value_name="Valor")
             line = (alt.Chart(df_long)
@@ -634,9 +613,9 @@ else:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Histórico Reef (CSV offline)
+    # Histórico Reef (carregar/baixar)
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("## Histórico Reef (CSV offline)")
+    st.markdown("## Histórico Reef (CSV / Excel / Numbers)")
     if "reef_history" not in st.session_state:
         st.session_state.reef_history = pd.DataFrame(columns=[
             "timestamp","volume_L","KH_atual","Ca_atual","Mg_atual",
@@ -644,12 +623,12 @@ else:
             "dose_pair_mL","KH_gain_dia","Ca_gain_dia","KH_liq_dia","Ca_liq_dia","obs"
         ])
 
-    up = st.file_uploader("Carregar histórico (CSV / Excel / Numbers)", type=["csv","xlsx","xls","numbers"])
+    up = st.file_uploader("Carregar arquivo", type=["csv","xlsx","xls","numbers"])
     if up is not None:
         df_loaded = load_history_any(up)
         if df_loaded is not None:
-          st.session_state.reef_history = df_loaded
-          st.success("Histórico carregado com sucesso.")
+            st.session_state.reef_history = df_loaded
+            st.success("Histórico carregado com sucesso.")
 
     obs = st.text_input("Observações (opcional)")
     if st.button("➕ Adicionar linha desta sessão"):
@@ -671,9 +650,9 @@ else:
     st.download_button("⬇️ Baixar histórico (CSV)",
                        data=st.session_state.reef_history.to_csv(index=False).encode(),
                        file_name="reef_history.csv", mime="text/csv")
-    st.caption("Dica: na próxima sessão, faça upload deste CSV para continuar seu log.")
+    st.caption("Dica: na próxima sessão, faça upload deste mesmo arquivo para continuar seu log.")
 
-    # Tabela de faixas Reef (2 casas no 'Atual')
+    # Tabela de faixas Reef
     reef_df = pd.DataFrame({
         "Parâmetro": ["KH (°dKH)", "Ca (ppm)", "Mg (ppm)"],
         "Atual": [round(kh_now,2), round(ca_now,2), round(mg_now,2)],
@@ -704,4 +683,4 @@ else:
     st.download_button("💾 Salvar configuração Reef (JSON)", data=json.dumps(cfg,indent=2,ensure_ascii=False).encode(),
                        file_name="config_doser_reef.json", mime="application/json")
 
-    st.markdown('<div class="muted">Versão 2.8 • Banner no topo • 2 casas • histórico Reef por data (Altair)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.9 • Banner no topo • 2 casas • Loader universal CSV/XLSX/XLS/NUMBERS</div>', unsafe_allow_html=True)
