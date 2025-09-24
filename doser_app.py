@@ -1,5 +1,5 @@
-# doser_app.py — v2.9 (loader universal CSV/XLSX/XLS/NUMBERS)
-import io, json, math, datetime as dt
+# doser_app.py — v2.10
+import io, json, math, datetime as dt, tempfile
 import pandas as pd
 import altair as alt
 import streamlit as st
@@ -137,11 +137,8 @@ def ratio_redfield(no3_ppm: float, po4_ppm: float):
 def dkh_from_meq(meq): return meq * 2.8
 
 # ===================== Loader universal (CSV / Excel / Numbers) =====================
-import tempfile
 def load_history_any(up_file) -> pd.DataFrame | None:
-    """Lê histórico em CSV/XLSX/XLS/NUMBERS e devolve DataFrame normalizado.
-       Retorna None se não conseguir ler.
-    """
+    """Lê histórico em CSV/XLSX/XLS/NUMBERS e devolve DataFrame normalizado; None se falhar."""
     name = (up_file.name or "").lower()
     try:
         if name.endswith(".csv"):
@@ -154,7 +151,7 @@ def load_history_any(up_file) -> pd.DataFrame | None:
             try:
                 from numbers_parser import Document
             except Exception:
-                st.error("Para abrir .numbers, instale `numbers-parser` no ambiente (ou exporte para CSV).")
+                st.error("Para abrir .numbers, instale `numbers-parser` (ou exporte para CSV).")
                 return None
             with tempfile.NamedTemporaryFile(delete=False, suffix=".numbers") as tmp:
                 tmp.write(up_file.getbuffer())
@@ -199,9 +196,17 @@ def load_history_any(up_file) -> pd.DataFrame | None:
         }
         df = df.rename(columns=rename_map)
 
-        # Tipos/2 casas
+        # timestamp parser robusto (tenta ISO e BR)
+        def parse_ts(series):
+            ts = pd.to_datetime(series, errors="coerce")
+            if ts.isna().mean() > 0.5:
+                ts = pd.to_datetime(series, errors="coerce", dayfirst=True)
+            return ts
+
         if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            df["timestamp"] = parse_ts(df["timestamp"])
+
+        # Tipos/2 casas
         numeric_cols = [
             "volume_L","KH_atual","Ca_atual","Mg_atual",
             "KH_ideal","Ca_ideal","Mg_ideal",
@@ -211,6 +216,7 @@ def load_history_any(up_file) -> pd.DataFrame | None:
         for c in numeric_cols:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
+
         return df
 
     except Exception:
@@ -233,7 +239,7 @@ with colh1:
 with colh2:
     st.radio("Tipo de aquário", ["Doce + Camarões", "Marinho (Reef)"], horizontal=True, key="mode", index=0)
 
-# modo efetivo após escolha; re-injeta tema (o banner superior muda na próxima reexecução)
+# modo efetivo após escolha
 mode = st.session_state["mode"]
 st.markdown(theme_css(mode), unsafe_allow_html=True)
 st.markdown(render_badges(mode), unsafe_allow_html=True)
@@ -480,7 +486,7 @@ if mode == "Doce + Camarões":
                          "PO4_ppm":po4_target,"NO3_ppm":no3_target,"GH_dH":gh_target,"KH_dKH":kh_target}}
     st.download_button("💾 Salvar configuração (JSON)", data=json.dumps(config,indent=2,ensure_ascii=False).encode(),
                        file_name="config_doser_fw.json", mime="application/json")
-    st.markdown('<div class="muted">Versão 2.9 • Banner no topo • 2 casas • Loader universal CSV/XLSX/XLS/NUMBERS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.10 • Banner topo • 2 casas • Loader universal • Uploader com guard</div>', unsafe_allow_html=True)
 
 # ======================================================================
 # ===================== MARINHO (REEF) =================================
@@ -534,23 +540,37 @@ else:
         st.markdown("### Gráfico histórico (KH, Ca, Mg) por data")
         if "reef_history" in st.session_state and not st.session_state.reef_history.empty:
             dfh = st.session_state.reef_history.copy()
-            dfh["timestamp"] = pd.to_datetime(dfh["timestamp"], errors="coerce")
+
+            # parse & ordenar por data
+            def parse_ts(series):
+                ts = pd.to_datetime(series, errors="coerce")
+                if ts.isna().mean() > 0.5:
+                    ts = pd.to_datetime(series, errors="coerce", dayfirst=True)
+                return ts
+            dfh["timestamp"] = parse_ts(dfh["timestamp"])
             dfh = dfh.dropna(subset=["timestamp"]).sort_values("timestamp")
 
+            # long format
             df_long = dfh.melt(id_vars=["timestamp"], value_vars=["KH_atual","Ca_atual","Mg_atual"],
                                var_name="Parametro", value_name="Valor")
-            line = (alt.Chart(df_long)
-                    .mark_line(interpolate='monotone', strokeWidth=2.5)
-                    .encode(x=alt.X('timestamp:T', axis=alt.Axis(title='Data', format='%d/%m', labelAngle=-20)),
-                            y=alt.Y('Valor:Q', axis=alt.Axis(title='Valor')),
-                            color=alt.Color('Parametro:N', legend=alt.Legend(title=None)),
-                            tooltip=[alt.Tooltip('timestamp:T', title='Data', format='%d/%m/%Y %H:%M'),
-                                     alt.Tooltip('Parametro:N', title='Parâmetro'),
-                                     alt.Tooltip('Valor:Q', title='Valor', format='.2f')])
-                    .properties(height=260))
-            st.altair_chart(line, use_container_width=True)
 
-            # Consumo observado (robusto; 2 casas)
+            # Linhas + Pontos
+            base = alt.Chart(df_long).encode(
+                x=alt.X('timestamp:T', axis=alt.Axis(title='Data', format='%d/%m', labelAngle=-20)),
+                y=alt.Y('Valor:Q', axis=alt.Axis(title='Valor')),
+                color=alt.Color('Parametro:N', legend=alt.Legend(title=None)),
+                tooltip=[
+                    alt.Tooltip('timestamp:T', title='Data', format='%d/%m/%Y %H:%M'),
+                    alt.Tooltip('Parametro:N', title='Parâmetro'),
+                    alt.Tooltip('Valor:Q', title='Valor', format='.2f')
+                ]
+            )
+            line = base.mark_line(interpolate='monotone', strokeWidth=2.5)
+            pts  = base.mark_circle(size=64, opacity=1.0)
+            chart = (line + pts).properties(height=260)
+            st.altair_chart(chart, use_container_width=True)
+
+            # Consumo observado (mediana das variações diárias)
             df_plot = dfh.set_index("timestamp")[["KH_atual","Ca_atual","Mg_atual"]]
             dt_days = df_plot.index.to_series().diff().dt.total_seconds().div(86400.0)
             dt_days = dt_days.replace([0, None], pd.NA).fillna(1.0)
@@ -559,10 +579,12 @@ else:
                 delta = df_obs[col].diff()
                 per_day = (delta / dt_days).replace([pd.NA, float("inf"), -float("inf")], 0)
                 df_obs[col+"_dday"] = per_day
+
             def med_cons(series, clamp=None):
                 s = pd.to_numeric(series, errors="coerce").dropna()
                 if clamp is not None: s = s.clip(lower=-clamp, upper=clamp)
                 return float(max(0.0, round(-s.median(), 2))) if not s.empty else 0.0
+
             kh_cons_obs = med_cons(df_obs["KH_atual_dday"], clamp=3.0)
             ca_cons_obs = med_cons(df_obs["Ca_atual_dday"], clamp=50.0)
             mg_cons_obs = med_cons(df_obs["Mg_atual_dday"], clamp=20.0)
@@ -581,7 +603,8 @@ else:
             try:
                 last_ts = pd.to_datetime(st.session_state.reef_history["timestamp"], errors="coerce").dropna()
                 if not last_ts.empty: default_start_date = last_ts.max().date()
-            except Exception: pass
+            except Exception:
+                pass
         proj_start = st.date_input("Iniciar projeção em", value=default_start_date)
         proj_days = st.slider("Dias para projetar", min_value=7, max_value=30, value=14, step=1)
 
@@ -589,6 +612,7 @@ else:
         kh_list, ca_list, mg_list = [], [], []
         kh_val, ca_val, mg_val = kh_now, ca_now, mg_now
         kh_list.append(kh_val); ca_list.append(ca_val); mg_list.append(mg_val)
+        kh_gain = max(0.0, kh_gain); ca_gain = max(0.0, ca_gain)  # segurança
         for _ in range(proj_days):
             kh_increment = min(kh_gain - kh_cons, max_kh_raise_net)
             ca_increment = (ca_gain - ca_cons)
@@ -613,9 +637,10 @@ else:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Histórico Reef (carregar/baixar)
+    # --- Histórico Reef (carregar/baixar) com GUARD ---
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("## Histórico Reef (CSV / Excel / Numbers)")
+
     if "reef_history" not in st.session_state:
         st.session_state.reef_history = pd.DataFrame(columns=[
             "timestamp","volume_L","KH_atual","Ca_atual","Mg_atual",
@@ -623,12 +648,18 @@ else:
             "dose_pair_mL","KH_gain_dia","Ca_gain_dia","KH_liq_dia","Ca_liq_dia","obs"
         ])
 
-    up = st.file_uploader("Carregar arquivo", type=["csv","xlsx","xls","numbers"])
+    up = st.file_uploader("Carregar arquivo", type=["csv","xlsx","xls","numbers"], key="reef_uploader")
     if up is not None:
-        df_loaded = load_history_any(up)
-        if df_loaded is not None:
-            st.session_state.reef_history = df_loaded
-            st.success("Histórico carregado com sucesso.")
+        sig = (up.name, getattr(up, "size", None))
+        if st.session_state.get("reef_loaded_sig") != sig:
+            df_loaded = load_history_any(up)
+            if df_loaded is not None:
+                st.session_state.reef_history = df_loaded
+                st.session_state.reef_loaded_sig = sig
+                st.success("Histórico carregado com sucesso.")
+        else:
+            # mesmo arquivo; mantém o DF atual para não perder novas linhas
+            pass
 
     obs = st.text_input("Observações (opcional)")
     if st.button("➕ Adicionar linha desta sessão"):
@@ -643,7 +674,10 @@ else:
             "KH_liq_dia": round(kh_net,2), "Ca_liq_dia": round(ca_net,2),
             "obs": obs or ""
         }
-        st.session_state.reef_history = pd.concat([st.session_state.reef_history, pd.DataFrame([row])], ignore_index=True)
+        st.session_state.reef_history = pd.concat(
+            [st.session_state.reef_history, pd.DataFrame([row])],
+            ignore_index=True
+        )
         st.success("Linha adicionada ao histórico local.")
 
     st.dataframe(st.session_state.reef_history, use_container_width=True)
@@ -651,6 +685,7 @@ else:
                        data=st.session_state.reef_history.to_csv(index=False).encode(),
                        file_name="reef_history.csv", mime="text/csv")
     st.caption("Dica: na próxima sessão, faça upload deste mesmo arquivo para continuar seu log.")
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Tabela de faixas Reef
     reef_df = pd.DataFrame({
@@ -683,4 +718,4 @@ else:
     st.download_button("💾 Salvar configuração Reef (JSON)", data=json.dumps(cfg,indent=2,ensure_ascii=False).encode(),
                        file_name="config_doser_reef.json", mime="application/json")
 
-    st.markdown('<div class="muted">Versão 2.9 • Banner no topo • 2 casas • Loader universal CSV/XLSX/XLS/NUMBERS</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.10 • Banner topo • 2 casas • Loader universal • Uploader com guard • Gráfico com marcadores</div>', unsafe_allow_html=True)
