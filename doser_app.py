@@ -1,10 +1,10 @@
-# doser_app.py — v2.6  (tema dinâmico + badges animados + banner)
+# doser_app.py — v2.7 (top banner full-width + fix histórico)
 import io, json, math, datetime as dt
 import pandas as pd
 import streamlit as st
 
 # ===================== Config base (cores "default") =====================
-st.set_page_config(page_title="Química para Aquários", page_icon="💧", layout="wide")
+st.set_page_config(page_title="Doser • Aquários", page_icon="💧", layout="wide")
 
 PRIMARY_BG = "#0b1220"
 CARD_BG    = "#0f172a"
@@ -16,7 +16,7 @@ GOOD       = "#22c55e"
 WARN       = "#fbbf24"
 BAD        = "#ef4444"
 
-# ============== CSS base (usa CSS variables; tema dinâmico sobrescreve depois) ==============
+# ===================== CSS base =====================
 st.markdown(f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
@@ -32,13 +32,24 @@ st.markdown(f"""
     color: var(--text);
   }}
 
-  /* Banner */
-  .banner {{ margin: 6px 0 12px; border-radius: 16px; overflow: hidden; border: 1px solid var(--border); }}
-  .banner svg {{ display:block; width:100%; height:auto; }}
+  /* FULL-WIDTH TOP BANNER */
+  .block-container {{ padding-top: 0rem; }}
+  .top-banner {{
+    width: 100vw;
+    margin-left: calc(-50vw + 50%); /* sai das margens do container */
+    border-bottom: 1px solid var(--border);
+  }}
+  .top-banner svg {{ display:block; width:100%; height: 160px; }}
+  @media (max-width: 640px) {{
+    .top-banner svg {{ height: 110px; }}
+  }}
+  @media (max-width: 420px) {{
+    .top-banner svg {{ height: 90px; }}
+  }}
 
   .hero {{
     padding: 18px 18px 8px; border-bottom:1px solid var(--border);
-    background: linear-gradient(180deg, rgba(96,165,250,0.08), rgba(0,0,0,0)); /* leve "brilho" */
+    background: linear-gradient(180deg, rgba(96,165,250,0.08), rgba(0,0,0,0));
     margin-bottom: 6px;
   }}
   .hero h1 {{ margin:0; font-size: 24px; letter-spacing:0.2px; }}
@@ -94,26 +105,12 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# ============== Tema dinâmico: injeta override de variables por modo ==============
+# ============== Tema dinâmico ==============
 def theme_css(mode: str) -> str:
     if mode == "Doce + Camarões":
-        # Acento esverdeado
-        return """
-        <style>
-          :root {
-            --primary: #22c55e; /* emerald */
-          }
-        </style>
-        """
+        return "<style>:root{--primary:#22c55e}</style>"
     else:
-        # Acento azulado
-        return """
-        <style>
-          :root {
-            --primary: #60a5fa; /* sky */
-          }
-        </style>
-        """
+        return "<style>:root{--primary:#60a5fa}</style>"
 
 # ============== Helpers comuns ==============
 def kpi(title, value, subtitle="", cls=""):
@@ -143,7 +140,8 @@ def render_badges(mode: str) -> str:
         </div>
         """
 
-def render_banner_svg(mode: str) -> str:
+def render_top_banner_svg(mode: str) -> str:
+    """Banner topo full-width com ondas e gradiente por modo."""
     if mode == "Doce + Camarões":
         stops = [("#34d399", "0%"), ("#60a5fa", "60%"), ("#f472b6", "100%")]
         overlay = "#0ea5e9"
@@ -152,14 +150,12 @@ def render_banner_svg(mode: str) -> str:
         overlay = "#22d3ee"
     grad_stops = "\n".join([f'<stop offset="{pos}" stop-color="{col}" stop-opacity="1"/>' for col, pos in stops])
     return f"""
-    <div class="banner">
-      <svg viewBox="0 0 1200 200" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <linearGradient id="gradMain" x1="0" y1="0" x2="1" y2="0">{grad_stops}</linearGradient>
-        </defs>
-        <rect width="1200" height="200" fill="url(#gradMain)"/>
-        <path d="M0,120 C300,180 900,60 1200,120 L1200,200 L0,200 Z" fill="{overlay}" opacity="0.25"/>
-        <path d="M0,140 C300,200 900,80 1200,140 L1200,200 L0,200 Z" fill="white" opacity="0.06"/>
+    <div class="top-banner">
+      <svg viewBox="0 0 1200 160" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="gradMain" x1="0" y1="0" x2="1" y2="0">{grad_stops}</linearGradient></defs>
+        <rect width="1200" height="160" fill="url(#gradMain)"/>
+        <path d="M0,90 C300,150 900,30 1200,90 L1200,160 L0,160 Z" fill="{overlay}" opacity="0.25"/>
+        <path d="M0,110 C300,170 900,50 1200,110 L1200,160 L0,160 Z" fill="white" opacity="0.06"/>
       </svg>
     </div>
     """
@@ -194,8 +190,17 @@ def ratio_redfield(no3_ppm: float, po4_ppm: float):
 def dkh_from_meq(meq): return meq * 2.8
 def meq_from_dkh(dkh): return dkh / 2.8
 
-# ===================== Header =====================
+# ===================== Header & modo =====================
+# seletor de modo (topo)
 colh1, colh2 = st.columns([1,1.2])
+with colh2:
+    mode = st.radio("Tipo de aquário", ["Doce + Camarões", "Marinho (Reef)"], horizontal=True, index=0)
+
+# injeta tema e banner por modo
+st.markdown(theme_css(mode), unsafe_allow_html=True)
+st.markdown(render_top_banner_svg(mode), unsafe_allow_html=True)
+
+# título + badges dentro do container (abaixo do banner)
 with colh1:
     st.markdown("""
     <div class="hero">
@@ -203,16 +208,7 @@ with colh1:
       <div class="muted">Escolha o modo: Plantado + Camarões ou Marinho (Reef). Cálculos e UI se adaptam ao modo.</div>
     </div>
     """, unsafe_allow_html=True)
-
-# seletor de modo (à direita) — definimos já para injetar tema/banner abaixo
-with colh2:
-    mode = st.radio("Tipo de aquário", ["Doce + Camarões", "Marinho (Reef)"], horizontal=True, index=0)
-
-# injeta tema e header decorativo conforme o modo
-st.markdown(theme_css(mode), unsafe_allow_html=True)
-with colh1:
     st.markdown(render_badges(mode), unsafe_allow_html=True)
-    st.markdown(render_banner_svg(mode), unsafe_allow_html=True)
 
 # ===================== SIDEBAR (inputs) =====================
 with st.sidebar:
@@ -497,7 +493,7 @@ if mode == "Doce + Camarões":
     }
     st.download_button("💾 Salvar configuração (JSON)", data=json.dumps(config, indent=2, ensure_ascii=False).encode(), file_name="config_doser_fw.json", mime="application/json")
 
-    st.markdown('<div class="muted">Versão 2.6 • Tema dinâmico (verde/azul) • Badges animados • Banner adaptável</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.7 • Banner full-width + mobile friendly • Fix histórico</div>', unsafe_allow_html=True)
 
 # ======================================================================
 # ===================== MODO MARINHO (REEF) ============================
@@ -555,7 +551,7 @@ else:
         st.markdown('<span class="bad">Limitado pelo fabricante:</span> dose diária capada ao máximo permitido.', unsafe_allow_html=True)
     st.caption("Regras: dosar as partes em locais diferentes; não exceder 4 mL/25 L/dia de cada. Nunca misture.")
 
-    # Visualização: histórico/projeção
+    # ---------------- Visualização: Histórico / Projeção ----------------
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("## Visualização")
     view_mode = st.radio("Mostrar", ["Histórico (valores medidos)", "Projeção (simulada)"], horizontal=True, index=0)
@@ -569,15 +565,24 @@ else:
             df_plot = dfh.set_index("timestamp")[["KH_atual","Ca_atual","Mg_atual"]]
             st.line_chart(df_plot)
 
-            # Consumo observado
+            # -------- FIX: consumo observado sem usar index.shift (evita NullFrequencyError)
+            dt_days = df_plot.index.to_series().diff().dt.total_seconds().div(86400.0)
+            # evita divisões por zero / NaN
+            dt_days = dt_days.replace([0, None], pd.NA).fillna(1.0)
+
             df_obs = df_plot.copy()
-            df_obs["days"] = (df_obs.index - df_obs.index.shift(1)).total_seconds() / 86400.0
             for col in ["KH_atual","Ca_atual","Mg_atual"]:
-                df_obs[col+"_dday"] = (df_obs[col] - df_obs[col].shift(1)) / df_obs["days"]
+                delta = df_obs[col].diff()
+                per_day = (delta / dt_days).replace([pd.NA, float("inf"), -float("inf")], 0)
+                df_obs[col+"_dday"] = per_day
+
             def med_cons(series, clamp=None):
-                s = series.dropna()
-                if clamp: s = s.clip(lower=-clamp, upper=clamp)
-                return max(0.0, round(-s.median(), 3)) if not s.empty else 0.0
+                s = pd.to_numeric(series, errors="coerce").dropna()
+                if clamp is not None:
+                    s = s.clip(lower=-clamp, upper=clamp)
+                # consumo = negativo da variação/dia (queda)
+                return float(max(0.0, round(-s.median(), 3))) if not s.empty else 0.0
+
             kh_cons_obs = med_cons(df_obs["KH_atual_dday"], clamp=3.0)
             ca_cons_obs = med_cons(df_obs["Ca_atual_dday"], clamp=50.0)
             mg_cons_obs = med_cons(df_obs["Mg_atual_dday"], clamp=20.0)
@@ -587,10 +592,11 @@ else:
             with k2: st.markdown(kpi("Ca – consumo observado", f"{ca_cons_obs:.1f} ppm/dia"), unsafe_allow_html=True)
             with k3: st.markdown(kpi("Mg – consumo observado", f"{mg_cons_obs:.1f} ppm/dia"), unsafe_allow_html=True)
 
-            st.caption("Consumo observado = mediana das variações diárias entre medições (ignora outliers).")
+            st.caption("Consumo observado = mediana das variações diárias entre medições (robusto a intervalos irregulares).")
         else:
             st.info("Seu histórico ainda está vazio. Adicione linhas no card abaixo e o gráfico aparece aqui.")
     else:
+        # Projeção por data
         st.markdown("### Projeção por data (KH, Ca, Mg)")
         default_start_date = dt.date.today()
         if "reef_history" in st.session_state and not st.session_state.reef_history.empty:
@@ -622,7 +628,7 @@ else:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Histórico Reef (CSV offline)
+    # ---------------- Histórico Reef (CSV offline) ----------------
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("## Histórico Reef (CSV offline)")
     if "reef_history" not in st.session_state:
@@ -667,14 +673,16 @@ else:
     st.caption("Dica: na próxima sessão, faça upload deste CSV para continuar seu log.")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Faixas Reef (sem decimais na faixa; estado atual colorido)
+    # ---- Tabela de faixas Reef ----
     reef_df = pd.DataFrame({
         "Parâmetro": ["KH (°dKH)", "Ca (ppm)", "Mg (ppm)"],
         "Atual": [kh_now, ca_now, mg_now],
         "Faixa": ["8–12", "380–450", "1250–1350"],
-        "min": [8.0, 380.0, 1250.0],
+        "min": [8.0, 380.0, 1350.0 - 100.0],  # 1250
         "max": [12.0, 450.0, 1350.0],
     })
+    reef_df.loc[2, "min"] = 1250.0  # clareza
+
     reef_display = reef_df[["Parâmetro", "Atual", "Faixa"]].copy()
 
     def _style_reef(df_show, limits=reef_df[["min","max"]]):
@@ -693,7 +701,6 @@ else:
     st.markdown("## Faixas recomendadas (Reef)")
     st.markdown(styled_reef.to_html(), unsafe_allow_html=True)
     st.caption("Padrão: KH 8–12 • Ca 380–450 ppm • Mg 1250–1350 ppm.")
-    st.markdown('</div>', unsafe_allow_html=True)
 
     cfg_reef = {
         "mode": "reef",
@@ -719,4 +726,4 @@ else:
                        file_name="config_doser_reef.json",
                        mime="application/json")
 
-    st.markdown('<div class="muted">Versão 2.6 • Tema dinâmico (verde/azul) • Badges animados • Banner adaptável • Gráfico histórico Reef</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.7 • Banner full-width + mobile friendly • Fix histórico</div>', unsafe_allow_html=True)
