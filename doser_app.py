@@ -646,9 +646,9 @@ else:
     up = st.file_uploader("Carregar histórico (CSV / Excel / Numbers)", type=["csv","xlsx","xls","numbers"])
     if up is not None:
         df_loaded = load_history_any(up)
-    if df_loaded is not None:
-        st.session_state.reef_history = df_loaded
-        st.success("Histórico carregado com sucesso.")
+        if df_loaded is not None:
+          st.session_state.reef_history = df_loaded
+          st.success("Histórico carregado com sucesso.")
 
     obs = st.text_input("Observações (opcional)")
     if st.button("➕ Adicionar linha desta sessão"):
