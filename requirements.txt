@@ -1,2 +1,6 @@
-streamlit>=1.35
-pandas>=2.0
+streamlit>=1.36
+pandas>=2.2
+altair>=5.2
+openpyxl>=3.1      # leitura de .xlsx
+xlrd==1.2.0        # leitura de .xls (versões novas do xlrd não leem .xls)
+numbers-parser     # leitura de arquivos Apple Numbers (.numbers)
