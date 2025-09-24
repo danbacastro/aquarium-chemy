@@ -72,6 +72,105 @@ def theme_css(mode: str) -> str:
     return "<style>:root{--primary:#22c55e}</style>" if mode=="Doce + Camarões" else "<style>:root{--primary:#60a5fa}</style>"
 
 # ============== Helpers comuns ==============
+
+# --- Leitor universal para histórico (CSV / XLSX / XLS / NUMBERS) ---
+import tempfile
+
+def load_history_any(up_file) -> pd.DataFrame | None:
+    """Lê um arquivo de histórico em CSV/XLSX/XLS/NUMBERS e devolve um DataFrame.
+       Retorna None se não conseguir ler.
+    """
+    name = (up_file.name or "").lower()
+
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(up_file)
+
+        elif name.endswith((".xlsx", ".xls")):
+            # requer openpyxl/xlrd dependendo do formato
+            df = pd.read_excel(up_file)
+
+        elif name.endswith(".numbers"):
+            # requer: pip install numbers-parser
+            try:
+                from numbers_parser import Document
+            except Exception as e:
+                st.error("Para abrir .numbers, instale `numbers-parser` (ou exporte para CSV no Numbers).")
+                return None
+
+            # Salva bytes em arquivo temporário porque o Document precisa de caminho
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".numbers") as tmp:
+                tmp.write(up_file.getbuffer())
+                tmp_path = tmp.name
+
+            doc = Document(tmp_path)
+
+            # tenta achar a 1ª tabela com cabeçalhos do nosso histórico
+            want = {"timestamp","volume_L","KH_atual","Ca_atual","Mg_atual"}
+            chosen = None
+            for s in doc.sheets:
+                for t in s.tables:
+                    # extrai todas as linhas da tabela
+                    mat = []
+                    for row in t.rows():
+                        cells = getattr(row, "cells", row)
+                        mat.append([getattr(c, "value", c) for c in cells])
+
+                    if not mat:
+                        continue
+                    header = [str(x) for x in mat[0]]
+                    if want.issubset(set(header)):
+                        chosen = pd.DataFrame(mat[1:], columns=header)
+                        break
+                if chosen is not None:
+                    break
+
+            # fallback: 1ª tabela do 1º sheet
+            if chosen is None:
+                s = doc.sheets[0]; t = s.tables[0]
+                mat = []
+                for row in t.rows():
+                    cells = getattr(row, "cells", row)
+                    mat.append([getattr(c, "value", c) for c in cells])
+                header = [str(x) for x in mat[0]] if mat else []
+                chosen = pd.DataFrame(mat[1:], columns=header)
+
+            df = chosen
+
+        else:
+            st.error("Formato não suportado. Use CSV, XLSX, XLS ou NUMBERS.")
+            return None
+
+        # normaliza nomes comuns (caso venham com espaços) e tipos numéricos
+        rename_map = {
+            "KH atual": "KH_atual", "Ca atual": "Ca_atual", "Mg atual": "Mg_atual",
+            "KH ideal": "KH_ideal", "Ca ideal": "Ca_ideal", "Mg ideal": "Mg_ideal",
+            "KH/dia": "KH_cons", "Ca/dia": "Ca_cons", "Mg/dia": "Mg_cons",
+            "Dose (mL)": "dose_pair_mL", "KH ganho/dia": "KH_gain_dia", "Ca ganho/dia": "Ca_gain_dia",
+            "KH líquido/dia": "KH_liq_dia", "Ca líquido/dia": "Ca_liq_dia",
+        }
+        df = df.rename(columns=rename_map)
+
+        # timestamp e arredondamento (2 casas)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
+        numeric_cols = [
+            "volume_L","KH_atual","Ca_atual","Mg_atual",
+            "KH_ideal","Ca_ideal","Mg_ideal",
+            "KH_cons","Ca_cons","Mg_cons",
+            "dose_pair_mL","KH_gain_dia","Ca_gain_dia","KH_liq_dia","Ca_liq_dia"
+        ]
+        for c in numeric_cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").round(2)
+
+        return df
+
+    except Exception as e:
+        st.error("Não consegui ler o arquivo enviado. Tente exportar para CSV ou verifique o conteúdo.")
+        return None
+
 def kpi(title, value, subtitle="", cls=""):
     cls_class = f" {cls}" if cls else ""
     return f"""
@@ -544,13 +643,12 @@ else:
             "dose_pair_mL","KH_gain_dia","Ca_gain_dia","KH_liq_dia","Ca_liq_dia","obs"
         ])
 
-    up = st.file_uploader("Carregar CSV existente", type="csv")
+    up = st.file_uploader("Carregar histórico (CSV / Excel / Numbers)", type=["csv","xlsx","xls","numbers"])
     if up is not None:
-        try:
-            st.session_state.reef_history = pd.read_csv(up)
-            st.success("Histórico carregado.")
-        except Exception as e:
-            st.error(f"Não consegui ler o CSV: {e}")
+        df_loaded = load_history_any(up)
+    if df_loaded is not None:
+        st.session_state.reef_history = df_loaded
+        st.success("Histórico carregado com sucesso.")
 
     obs = st.text_input("Observações (opcional)")
     if st.button("➕ Adicionar linha desta sessão"):
