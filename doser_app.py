@@ -1,4 +1,4 @@
-# doser_app.py — v2.10
+# doser_app.py — v2.11
 import io, json, math, datetime as dt, tempfile
 import pandas as pd
 import altair as alt
@@ -228,7 +228,7 @@ mode_default = st.session_state.get("mode", "Doce + Camarões")
 st.markdown(theme_css(mode_default), unsafe_allow_html=True)
 st.markdown(render_top_banner_svg(mode_default), unsafe_allow_html=True)
 
-# header + seletor (botões ficam abaixo da faixa)
+# header + seletor
 colh1, colh2 = st.columns([1,1.2])
 with colh1:
     st.markdown("""
@@ -486,7 +486,7 @@ if mode == "Doce + Camarões":
                          "PO4_ppm":po4_target,"NO3_ppm":no3_target,"GH_dH":gh_target,"KH_dKH":kh_target}}
     st.download_button("💾 Salvar configuração (JSON)", data=json.dumps(config,indent=2,ensure_ascii=False).encode(),
                        file_name="config_doser_fw.json", mime="application/json")
-    st.markdown('<div class="muted">Versão 2.10 • Banner topo • 2 casas • Loader universal • Uploader com guard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.11 • Banner topo • 2 casas • Loader universal • Guard • Histórico por dia (toggle)</div>', unsafe_allow_html=True)
 
 # ======================================================================
 # ===================== MARINHO (REEF) =================================
@@ -550,28 +550,50 @@ else:
             dfh["timestamp"] = parse_ts(dfh["timestamp"])
             dfh = dfh.dropna(subset=["timestamp"]).sort_values("timestamp")
 
-            # long format
-            df_long = dfh.melt(id_vars=["timestamp"], value_vars=["KH_atual","Ca_atual","Mg_atual"],
-                               var_name="Parametro", value_name="Valor")
+            # ===== NOVO: COMPACTAÇÃO POR DIA =====
+            compact_daily = st.checkbox("Compactar por dia (usa o último registro de cada dia)", value=True)
 
-            # Linhas + Pontos
-            base = alt.Chart(df_long).encode(
-                x=alt.X('timestamp:T', axis=alt.Axis(title='Data', format='%d/%m', labelAngle=-20)),
-                y=alt.Y('Valor:Q', axis=alt.Axis(title='Valor')),
-                color=alt.Color('Parametro:N', legend=alt.Legend(title=None)),
-                tooltip=[
-                    alt.Tooltip('timestamp:T', title='Data', format='%d/%m/%Y %H:%M'),
-                    alt.Tooltip('Parametro:N', title='Parâmetro'),
-                    alt.Tooltip('Valor:Q', title='Valor', format='.2f')
-                ]
-            )
-            line = base.mark_line(interpolate='monotone', strokeWidth=2.5)
-            pts  = base.mark_circle(size=64, opacity=1.0)
-            chart = (line + pts).properties(height=260)
-            st.altair_chart(chart, use_container_width=True)
+            if compact_daily:
+                dfh["Dia"] = pd.to_datetime(dfh["timestamp"].dt.date)
+                df_day = (dfh
+                          .sort_values("timestamp")
+                          .groupby("Dia", as_index=False)
+                          .agg({"KH_atual":"last","Ca_atual":"last","Mg_atual":"last"}))
+
+                df_long = df_day.melt(id_vars=["Dia"], value_vars=["KH_atual","Ca_atual","Mg_atual"],
+                                      var_name="Parametro", value_name="Valor")
+
+                base = alt.Chart(df_long).encode(
+                    x=alt.X('Dia:T', axis=alt.Axis(title='Data', format='%d/%m', labelAngle=-20)),
+                    y=alt.Y('Valor:Q', axis=alt.Axis(title='Valor')),
+                    color=alt.Color('Parametro:N', legend=alt.Legend(title=None)),
+                    tooltip=[alt.Tooltip('Dia:T', title='Data', format='%d/%m/%Y'),
+                             alt.Tooltip('Parametro:N', title='Parâmetro'),
+                             alt.Tooltip('Valor:Q', title='Valor', format='.2f')]
+                )
+                line = base.mark_line(interpolate='monotone', strokeWidth=2.5)
+                pts  = base.mark_circle(size=64, opacity=1.0)
+                st.altair_chart(line + pts, use_container_width=True)
+
+                df_plot = df_day.set_index("Dia")[["KH_atual","Ca_atual","Mg_atual"]]
+            else:
+                df_long = dfh.melt(id_vars=["timestamp"], value_vars=["KH_atual","Ca_atual","Mg_atual"],
+                                   var_name="Parametro", value_name="Valor")
+                base = alt.Chart(df_long).encode(
+                    x=alt.X('timestamp:T', axis=alt.Axis(title='Data', format='%d/%m', labelAngle=-20)),
+                    y=alt.Y('Valor:Q', axis=alt.Axis(title='Valor')),
+                    color=alt.Color('Parametro:N', legend=alt.Legend(title=None)),
+                    tooltip=[alt.Tooltip('timestamp:T', title='Data', format='%d/%m/%Y %H:%M'),
+                             alt.Tooltip('Parametro:N', title='Parâmetro'),
+                             alt.Tooltip('Valor:Q', title='Valor', format='.2f')]
+                )
+                line = base.mark_line(interpolate='monotone', strokeWidth=2.5)
+                pts  = base.mark_circle(size=64, opacity=1.0)
+                st.altair_chart(line + pts, use_container_width=True)
+
+                df_plot = dfh.set_index("timestamp")[["KH_atual","Ca_atual","Mg_atual"]]
 
             # Consumo observado (mediana das variações diárias)
-            df_plot = dfh.set_index("timestamp")[["KH_atual","Ca_atual","Mg_atual"]]
             dt_days = df_plot.index.to_series().diff().dt.total_seconds().div(86400.0)
             dt_days = dt_days.replace([0, None], pd.NA).fillna(1.0)
             df_obs = df_plot.copy()
@@ -593,7 +615,7 @@ else:
             with k1: st.markdown(kpi("KH – consumo observado", f"{kh_cons_obs:.2f} °dKH/dia"), unsafe_allow_html=True)
             with k2: st.markdown(kpi("Ca – consumo observado", f"{ca_cons_obs:.2f} ppm/dia"), unsafe_allow_html=True)
             with k3: st.markdown(kpi("Mg – consumo observado", f"{mg_cons_obs:.2f} ppm/dia"), unsafe_allow_html=True)
-            st.caption("Consumo observado = mediana das variações diárias entre medições (intervalos irregulares ok).")
+            st.caption("Quando ‘Compactar por dia’ está ativo, cada ponto é o **último registro** daquele dia.")
         else:
             st.info("Seu histórico ainda está vazio. Adicione linhas no card abaixo e o gráfico aparece aqui.")
     else:
@@ -612,7 +634,7 @@ else:
         kh_list, ca_list, mg_list = [], [], []
         kh_val, ca_val, mg_val = kh_now, ca_now, mg_now
         kh_list.append(kh_val); ca_list.append(ca_val); mg_list.append(mg_val)
-        kh_gain = max(0.0, kh_gain); ca_gain = max(0.0, ca_gain)  # segurança
+        kh_gain = max(0.0, kh_gain); ca_gain = max(0.0, ca_gain)
         for _ in range(proj_days):
             kh_increment = min(kh_gain - kh_cons, max_kh_raise_net)
             ca_increment = (ca_gain - ca_cons)
@@ -658,8 +680,7 @@ else:
                 st.session_state.reef_loaded_sig = sig
                 st.success("Histórico carregado com sucesso.")
         else:
-            # mesmo arquivo; mantém o DF atual para não perder novas linhas
-            pass
+            pass  # mesmo arquivo; mantém DF (não sobrescreve linhas novas)
 
     obs = st.text_input("Observações (opcional)")
     if st.button("➕ Adicionar linha desta sessão"):
@@ -718,4 +739,4 @@ else:
     st.download_button("💾 Salvar configuração Reef (JSON)", data=json.dumps(cfg,indent=2,ensure_ascii=False).encode(),
                        file_name="config_doser_reef.json", mime="application/json")
 
-    st.markdown('<div class="muted">Versão 2.10 • Banner topo • 2 casas • Loader universal • Uploader com guard • Gráfico com marcadores</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted">Versão 2.11 • Banner topo • 2 casas • Loader universal • Guard • Histórico por dia (toggle)</div>', unsafe_allow_html=True)
