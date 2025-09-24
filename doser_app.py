@@ -1,8 +1,9 @@
-# doser_app.py — v2.8 (banner no topo, histórico por data, 2 casas decimais)
+# doser_app.py — v3.0
 import io, json, math, datetime as dt
 import pandas as pd
 import altair as alt
 import streamlit as st
+import numbers-parser
 
 # ===================== Config base =====================
 st.set_page_config(page_title="Doser • Aquários", page_icon="💧", layout="wide")
